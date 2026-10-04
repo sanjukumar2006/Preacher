@@ -3,7 +3,8 @@
 
 Controls
   WASD / Arrow keys  move          SHIFT  run
-  E / SPACE / ENTER  talk / interact / continue dialogue
+  SPACE              jump (also advances dialogue)
+  E / ENTER          talk / interact / continue dialogue
   M  world map       N  skip an hour of time      H  help
   F11  fullscreen    ESC  pause
 """
@@ -86,10 +87,19 @@ class Game:
         self.a = load_assets()
         self.sfx = {}
         try:
-            for n in ("blip", "talk", "bye"):
+            for n in ("blip", "talk", "bye", "jump", "land"):
                 self.sfx[n] = pygame.mixer.Sound(os.path.join(ASSETS, "sfx", n + ".wav"))
         except Exception:
             pass
+        self.sfx["jump"].set_volume(0.7) if "jump" in self.sfx else None
+        self.music_on = True
+        try:
+            pygame.mixer.music.load(os.path.join(ASSETS, "music", "hearth_and_willow.mp3"))
+            pygame.mixer.music.set_volume(0.45)
+            pygame.mixer.music.play(-1, fade_ms=1500)
+        except Exception as ex:
+            print("Music not available:", ex)
+            self.music_on = False
         self.font = pygame.font.Font(None, 20)
         self.font_s = pygame.font.Font(None, 16)
         self.font_m = pygame.font.Font(None, 24)
@@ -314,10 +324,16 @@ class Game:
         if self.paused or self.show_map:
             return
         talking = self.dialogue.active
+        if self.music_on:
+            want = 0.22 if talking else 0.45
+            cur = pygame.mixer.music.get_volume()
+            pygame.mixer.music.set_volume(cur + max(-0.01, min(0.01, want - cur)))
         self.dialogue.update(dt, self.sfx.get("blip"))
         npc_rects = [n.foot for n in self.npcs]
         if not talking:
             self.player.update(dt, keys, self.world, npc_rects)
+            if self.player.just_landed:
+                self.play("land")
             self.target = self.find_target()
         else:
             self.player.moving = False
@@ -511,7 +527,7 @@ class Game:
         self.dialogue.draw(v)
         if self.help_t > 0 and not self.dialogue.active:
             a = min(1.0, self.help_t / 2)
-            txt = "WASD move   SHIFT run   E talk   M map   N skip time   H help"
+            txt = "WASD move  SHIFT run  SPACE jump  E talk  M map  B music  H help"
             img = self.font_s.render(txt, True, (255, 246, 226))
             s = pygame.Surface((img.get_width() + 18, 20), pygame.SRCALPHA)
             pygame.draw.rect(s, (40, 26, 22, 170), s.get_rect(), border_radius=8)
@@ -550,8 +566,8 @@ class Game:
         self.text_shadow(v, self.font_b, "HEARTHMOOR", (VIEW_W // 2, 62 + bob), (255, 226, 150), (70, 36, 24), True)
         self.text_shadow(v, self.font_m, "A tiny open-world village adventure", (VIEW_W // 2, 128), (255, 246, 226), (40, 24, 20), True)
         self.panel(v, pygame.Rect(VIEW_W // 2 - 170, 176, 340, 96), 190)
-        lines = ["WASD / Arrows .... move       SHIFT .... run", "E / Space / Enter .... talk & interact",
-                 "M .... world map        N .... skip time", "F11 .... fullscreen       ESC .... pause"]
+        lines = ["WASD / Arrows .... move       SHIFT .... run", "SPACE .... jump        E / Enter .... talk",
+                 "M .... map    N .... skip time    B .... music", "F11 .... fullscreen       ESC .... pause"]
         for i, l in enumerate(lines):
             self.text_shadow(v, self.font, l, (VIEW_W // 2, 186 + i * 20), center=True)
         if int(self.t * 2) % 2 == 0:
@@ -595,6 +611,8 @@ class Game:
             if self.paused:
                 if k == pygame.K_ESCAPE:
                     self.paused = False
+                    if self.music_on:
+                        pygame.mixer.music.unpause()
                 elif k == pygame.K_q:
                     return False
                 return True
@@ -607,6 +625,20 @@ class Game:
                         n.talking = False
                 else:
                     self.paused = True
+                    if self.music_on:
+                        pygame.mixer.music.pause()
+            elif k == pygame.K_b:
+                self.music_on = not self.music_on
+                if self.music_on:
+                    pygame.mixer.music.unpause()
+                else:
+                    pygame.mixer.music.pause()
+                self.toast("Music on" if self.music_on else "Music off", 1.5)
+            elif k == pygame.K_SPACE and not self.show_map:
+                if self.dialogue.active:
+                    self.dialogue.advance()
+                elif self.player.jump():
+                    self.play("jump")
             elif k == pygame.K_m:
                 self.show_map = not self.show_map
             elif k == pygame.K_h:
@@ -614,7 +646,7 @@ class Game:
             elif k == pygame.K_n and not self.dialogue.active:
                 self.time = (self.time + 1) % 24
                 self.toast("Time passes...", 1.5)
-            elif k in (pygame.K_e, pygame.K_SPACE, pygame.K_RETURN, pygame.K_KP_ENTER) and not self.show_map:
+            elif k in (pygame.K_e, pygame.K_RETURN, pygame.K_KP_ENTER) and not self.show_map:
                 if self.dialogue.active:
                     self.dialogue.advance()
                 else:

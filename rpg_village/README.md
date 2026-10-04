@@ -12,7 +12,9 @@ pet the dogs, read notice boards, find the glowing shrine, and watch day turn to
 |---|---|
 | WASD / Arrows | move |
 | SHIFT | run |
-| E / Space / Enter | talk, interact, next line |
+| SPACE | jump (also advances dialogue) |
+| E / Enter | talk, interact, next line |
+| B | music on/off |
 | M | world map |
 | N | skip one hour of time |
 | H | toggle help, F11 fullscreen, ESC pause / close dialogue |
@@ -23,7 +25,7 @@ pet the dogs, read notice boards, find the glowing shrine, and watch day turn to
 - `entities.py`        player, villagers (wander AI), animals, dialogue box
 - `data.py`            villager names, palettes, dialogue, named places  (edit this to change the story)
 - `generate_assets.py` draws every sprite/tile/sound with code into `assets/`
-- `assets/`            all generated art already included: tiles/, objects/, characters/, portraits/, animals/, decor/, ui/, sfx/
+- `assets/`            all generated art already included: tiles/, objects/, characters/, portraits/, animals/, decor/, ui/, sfx/, music/ (Hearth_and_Willow BGM)
 
 ## Tweaking
 - Different map: `python main.py --seed 12` (village layout stays, wilderness/lakes/forest change).

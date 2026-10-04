@@ -1211,6 +1211,27 @@ def tone(path, notes, vol=0.4):
         w.writeframes(bytes(frames))
 
 
+def sweep(path, f0, f1, dur, vol=0.35, noise=0.0):
+    rate = 22050
+    n = int(rate * dur)
+    frames = bytearray()
+    ph = 0.0
+    rnd = random.Random(1)
+    for i in range(n):
+        k = i / n
+        f = f0 + (f1 - f0) * k
+        ph += 2 * math.pi * f / rate
+        env = min(1.0, i / 120) * (1 - k) ** 1.2
+        v = math.sin(ph) * 0.8 + math.sin(ph * 2) * 0.15 + (rnd.random() * 2 - 1) * noise
+        frames += struct.pack("<h", int(max(-1, min(1, v)) * env * vol * 32767))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(bytes(frames))
+
+
 def make_sfx():
     d = os.path.join(ASSETS, "sfx")
     tone(os.path.join(d, "blip.wav"), [(620, 0.035)], 0.25)
@@ -1218,6 +1239,8 @@ def make_sfx():
     tone(os.path.join(d, "talk.wav"), [(660, 0.07), (880, 0.1)], 0.3)
     tone(os.path.join(d, "bye.wav"), [(660, 0.07), (440, 0.12)], 0.3)
     tone(os.path.join(d, "step.wav"), [(110, 0.03)], 0.15)
+    sweep(os.path.join(d, "jump.wav"), 330, 760, 0.17, 0.35)
+    sweep(os.path.join(d, "land.wav"), 150, 70, 0.07, 0.35, noise=0.25)
 
 
 def main():

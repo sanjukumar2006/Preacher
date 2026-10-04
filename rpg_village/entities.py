@@ -53,8 +53,27 @@ class Player(Mover):
         self.run = 150.0
         self.running = False
         self.footstep_t = 0.0
+        self.z = 0.0          # height above ground in pixels (visual only)
+        self.vz = 0.0
+        self.just_landed = False
+
+    JUMP_V = 175.0
+    GRAVITY = 640.0
+
+    def jump(self):
+        if self.z <= 0 and self.vz == 0:
+            self.vz = self.JUMP_V
+            return True
+        return False
 
     def update(self, dt, keys, world, others):
+        self.just_landed = False
+        if self.vz != 0 or self.z > 0:
+            self.vz -= self.GRAVITY * dt
+            self.z += self.vz * dt
+            if self.z <= 0:
+                self.z, self.vz = 0.0, 0.0
+                self.just_landed = True
         dx = (keys[pygame.K_RIGHT] or keys[pygame.K_d]) - (keys[pygame.K_LEFT] or keys[pygame.K_a])
         dy = (keys[pygame.K_DOWN] or keys[pygame.K_s]) - (keys[pygame.K_UP] or keys[pygame.K_w])
         self.running = bool(keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT])
@@ -78,10 +97,13 @@ class Player(Mover):
 
     def draw(self, surf, cam, shadow):
         sx, sy = int(self.x - cam[0]), int(self.y - cam[1])
-        surf.blit(shadow, (sx - shadow.get_width() // 2, sy - 6))
+        k = max(0.55, 1 - self.z / 60.0)          # shadow shrinks while airborne
+        sw = pygame.transform.scale(shadow, (int(shadow.get_width() * k), int(shadow.get_height() * k)))
+        surf.blit(sw, (sx - sw.get_width() // 2, sy - 6 + (shadow.get_height() - sw.get_height()) // 2))
         row = DIRS.index(self.dir)
         cw, ch = self.sheet.get_width() // 3, self.sheet.get_height() // 4
-        surf.blit(self.sheet, (sx - cw // 2, sy - ch + 2), (self.frame() * cw, row * ch, cw, ch))
+        fr = 0 if self.z > 2 else self.frame()
+        surf.blit(self.sheet, (sx - cw // 2, sy - ch + 2 - int(self.z)), (fr * cw, row * ch, cw, ch))
 
 
 class NPC(Mover):
