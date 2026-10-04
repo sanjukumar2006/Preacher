@@ -16,6 +16,11 @@ class DungeonWorld:
     def __init__(self, level=1):
         self.level = level
         self.grid = [[WALL for _ in range(DW)] for _ in range(DH)]
+        self.altar = None
+        self.throne = None
+        self.exit_tile = None
+        self.exit_cells = []
+        self.exit_open = False
         self._build(level)
 
     def _set_floor(self, x, y, kind=FLOOR):
@@ -122,6 +127,16 @@ class DungeonWorld:
             self.down, self.up = (17, 3), (17, 18)
             for p in ((13, 8), (22, 8), (13, 15), (22, 15)):
                 self.pillar(*p)
+        elif level == 6:
+            # Throne room of Grimhorn: one great hall, a raised dais, a sealed east wall.
+            self.room(8, 6, 27, 21)
+            self.room(13, 2, 22, 5)
+            self.down = self.up = None
+            self.throne = (17, 3)
+            for p in ((11, 9), (11, 13), (11, 17), (24, 9), (24, 13), (24, 17)):
+                self.pillar(*p)
+            self.exit_cells = [(x, y) for x in range(28, 34) for y in range(12, 15)]
+            self.exit_tile = (32, 13)
         else:
             # Level 5: Ancient Sanctum. Large final chamber with an altar.
             self.room(12, 2, 23, 6)
@@ -157,6 +172,12 @@ class DungeonWorld:
                   (15, 10), (20, 10), (15, 14), (20, 14)):
             self.pillar(*p)
 
+    def open_exit(self):
+        """After the boss falls: the sealed east wall crumbles into a corridor leading to a portal."""
+        self.exit_open = True
+        for x, y in self.exit_cells:
+            self.grid[y][x] = FLOOR
+
     def inb(self, x, y):
         return 0 <= x < DW and 0 <= y < DH
 
@@ -185,7 +206,7 @@ class Dungeon:
     def __init__(self, assets):
         self.assets = assets
         self.level = 1
-        self.max_level = 5
+        self.max_level = 5          # stairs go 1..5; level 6 is the boss throne room, entered through the purple gate
         self.world = DungeonWorld(1)
         self.t = 0.0
         self.cam = [0.0, 0.0]
@@ -208,7 +229,7 @@ class Dungeon:
         self.stairs = a5.subsurface((4 * 32, 15 * 32, 32, 32)).copy()
 
     def set_level(self, level, spawn="entrance"):
-        self.level = max(1, min(self.max_level, level))
+        self.level = max(1, min(6, level))
         self.world = DungeonWorld(self.level)
         self.torches = self._make_torches()
         self.cracks = self._make_details()
@@ -221,6 +242,8 @@ class Dungeon:
             tx, ty = self.world.up
         elif spawn == "up" and self.world.down:
             tx, ty = self.world.down
+        elif spawn == "gate":
+            tx, ty = (17, 20)
         elif spawn == "entrance":
             tx, ty = (17, 20) if self.level == 1 else (self.world.up or (17, 20))
         else:
@@ -238,6 +261,7 @@ class Dungeon:
             3: [(7, 3), (27, 3), (7, 20), (27, 20), (12, 8), (23, 8), (17, 15)],
             4: [(11, 5), (23, 5), (11, 18), (23, 18), (17, 8), (17, 15)],
             5: [(10, 9), (24, 9), (10, 18), (24, 18), (17, 7), (17, 20)],
+            6: [(9, 7), (26, 7), (9, 14), (26, 14), (9, 20), (26, 20), (14, 3), (21, 3), (14, 12), (21, 12)],
         }
         return [p for p in common[self.level] if self.world.walkable_tile(*p)]
 
@@ -248,6 +272,7 @@ class Dungeon:
             3: [(4, 4), (31, 4), (4, 19), (31, 19), (14, 6), (20, 17)],
             4: [(12, 7), (22, 7), (12, 16), (22, 16)],
             5: [(6, 8), (29, 8), (6, 19), (29, 19), (12, 16), (22, 16)],
+            6: [(9, 10), (26, 11), (13, 16), (22, 19)],
         }
         return [p for p in patterns[self.level] if self.world.walkable_tile(*p)]
 
@@ -269,6 +294,68 @@ class Dungeon:
         target_y = max(0, min(max_y, ty))
         self.cam[0] += (target_x - self.cam[0]) * 0.16
         self.cam[1] += (target_y - self.cam[1]) * 0.16
+
+    def _draw_throne_room(self, surf, camx, camy, combat):
+        w = self.world
+        # red carpet from the dais to the entrance
+        for y in range(4, 22):
+            for x in (16, 17, 18):
+                if w.grid[y][x] == FLOOR:
+                    sx, sy = x * T - camx, y * T - camy
+                    pygame.draw.rect(surf, (96, 20, 32) if x == 17 else (70, 14, 26), (sx, sy, T, T))
+                    if x == 16 or x == 18:
+                        pygame.draw.line(surf, (190, 140, 70), (sx + (0 if x == 16 else 31), sy),
+                                         (sx + (0 if x == 16 else 31), sy + 31), 1)
+        # dais steps
+        for y in range(2, 6):
+            for x in range(13, 23):
+                if (x, y) in ((16, y), (17, y), (18, y)):
+                    continue
+                sx, sy = x * T - camx, y * T - camy
+                pygame.draw.rect(surf, (52, 40, 62), (sx, sy, T, T))
+                pygame.draw.rect(surf, (88, 70, 100), (sx, sy, T, T), 1)
+        # the throne (drawn behind the seated boss)
+        tx, ty = w.throne
+        bx, by = tx * T + 16 - camx, ty * T + 30 - camy
+        pygame.draw.rect(surf, (40, 30, 48), (bx - 30, by - 92, 60, 96), border_radius=6)
+        pygame.draw.rect(surf, (96, 76, 110), (bx - 30, by - 92, 60, 96), 2, border_radius=6)
+        pygame.draw.polygon(surf, (60, 46, 70), [(bx - 30, by - 92), (bx - 18, by - 112), (bx - 6, by - 92)])
+        pygame.draw.polygon(surf, (60, 46, 70), [(bx + 30, by - 92), (bx + 18, by - 112), (bx + 6, by - 92)])
+        pygame.draw.rect(surf, (110, 22, 36), (bx - 20, by - 80, 40, 60), border_radius=4)
+        pygame.draw.rect(surf, (52, 40, 62), (bx - 36, by - 26, 72, 20), border_radius=4)       # seat
+        pygame.draw.rect(surf, (96, 76, 110), (bx - 36, by - 26, 72, 20), 1, border_radius=4)
+        pygame.draw.rect(surf, (36, 28, 44), (bx - 40, by - 54, 10, 40))                       # arm rests
+        pygame.draw.rect(surf, (36, 28, 44), (bx + 30, by - 54, 10, 40))
+        pulse = (math.sin(self.t * 3) + 1) / 2
+        pygame.draw.circle(surf, (200, 60, 70), (bx, by - 100), 3 + int(pulse * 2))
+        # the sealed east wall: a dim rune that wakes up once the path opens
+        if not w.exit_open:
+            sx, sy = 28 * T - camx, 13 * T - camy
+            col = (120 + int(60 * pulse), 40, 150 + int(40 * pulse))
+            pygame.draw.circle(surf, col, (sx + 16, sy + 16), 12, 1)
+            pygame.draw.line(surf, col, (sx + 6, sy + 16), (sx + 26, sy + 16), 1)
+            pygame.draw.line(surf, col, (sx + 16, sy + 6), (sx + 16, sy + 26), 1)
+
+    def _draw_portal(self, surf, camx, camy):
+        ex, ey = self.world.exit_tile
+        cx, cy = ex * T + 16 - camx, ey * T + 16 - camy
+        pulse = (math.sin(self.t * 4) + 1) / 2
+        # glowing path along the corridor
+        for x in range(28, ex):
+            for y in (12, 13, 14):
+                a = pygame.Surface((T, T), pygame.SRCALPHA)
+                a.fill((150, 90, 230, 28 + int(20 * pulse)))
+                surf.blit(a, (x * T - camx, y * T - camy))
+        glow = pygame.Surface((140, 140), pygame.SRCALPHA)
+        for r in range(66, 6, -6):
+            pygame.draw.circle(glow, (160, 100, 245, int(2.2 * (66 - r))), (70, 70), r)
+        surf.blit(glow, (cx - 70, cy - 70), special_flags=pygame.BLEND_RGBA_ADD)
+        for i in range(3):
+            a = self.t * (2.0 + i * .6) + i * 2.1
+            rx, ry = 22 - i * 5, 26 - i * 6
+            pygame.draw.ellipse(surf, (200 - i * 30, 150, 255), (cx - rx, cy - ry, rx * 2, ry * 2), 2)
+            pygame.draw.circle(surf, (255, 240, 255), (int(cx + math.cos(a) * rx), int(cy + math.sin(a) * ry)), 2)
+        pygame.draw.circle(surf, (240, 220, 255), (cx, cy), 5 + int(pulse * 3))
 
     def draw_tile(self, surf, img, sx, sy):
         surf.blit(img, (sx, sy))
@@ -318,6 +405,14 @@ class Dungeon:
             x, y = pos
             sx, sy = x * T - camx, y * T - camy
             surf.blit(self.stairs, (sx, sy))
+            if kind == "up" and combat and combat.boss_lock:      # sealed while the final boss lives
+                pulse = (math.sin(self.t * 6) + 1) / 2
+                pygame.draw.rect(surf, (30, 10, 44), (sx + 2, sy + 2, 28, 28), border_radius=5)
+                pygame.draw.circle(surf, (150, 60, 200), (sx + 16, sy + 16), 14, 2)
+                pygame.draw.circle(surf, (225, 130, 255), (sx + 16, sy + 16), 7 + int(pulse * 3), 1)
+                pygame.draw.line(surf, (190, 90, 235), (sx + 8, sy + 8), (sx + 24, sy + 24), 2)
+                pygame.draw.line(surf, (190, 90, 235), (sx + 24, sy + 8), (sx + 8, sy + 24), 2)
+                continue
             # directional marker
             pygame.draw.rect(surf, (8, 7, 12, 170), (sx + 5, sy + 4, 22, 22), border_radius=4)
             if kind == "down":
@@ -325,13 +420,22 @@ class Dungeon:
             else:
                 pygame.draw.polygon(surf, (210, 190, 225), [(sx + 8, sy + 14), (sx + 24, sy + 14), (sx + 16, sy + 6)])
 
-        # Level 5 altar.
-        if self.level == 5:
+        # Level 5 altar: the purple gate to the throne room (pulses and brightens once the floor is clear).
+        if self.level == 5 and self.world.altar:
             x, y = self.world.altar
             sx, sy = x * T - camx, y * T - camy
+            ready = bool(combat and combat.cleared and not combat.boss_defeated)
+            pulse = (math.sin(self.t * 4) + 1) / 2
             surf.blit(self.ornament, (sx, sy))
             pygame.draw.rect(surf, (70, 46, 84), (sx + 8, sy + 6, 16, 20), border_radius=4)
-            pygame.draw.circle(surf, (145, 92, 190), (sx + 16, sy + 11), 5)
+            pygame.draw.circle(surf, (145, 92, 190) if not ready else (190, 120, 245), (sx + 16, sy + 11), 5)
+            if ready:
+                pygame.draw.circle(surf, (225, 150, 255), (sx + 16, sy + 11), 8 + int(pulse * 4), 1)
+                pygame.draw.circle(surf, (170, 90, 230), (sx + 16, sy + 16), 17 + int(pulse * 3), 1)
+
+        # Level 6: throne room dressing (carpet, dais, throne, sealed wall / portal).
+        if self.level == 6:
+            self._draw_throne_room(surf, camx, camy, combat)
 
         # Cracks/rubble details.
         for x, y in self.cracks:
@@ -352,6 +456,9 @@ class Dungeon:
             pygame.draw.circle(surf, (245, 134, 45), (px, py + flick), 6)
             pygame.draw.circle(surf, (255, 232, 145), (px, py + flick - 1), 2)
 
+        if self.level == 6 and self.world.exit_open:
+            self._draw_portal(surf, camx, camy)
+
         # Monsters and the player (depth-sorted together by the combat system).
         if combat:
             combat.draw_entities(surf, camx, camy, shadow)
@@ -360,14 +467,20 @@ class Dungeon:
 
         # The dungeon is deliberately very dark: visibility comes from torches + player lantern.
         darkness = pygame.Surface((640, 360), pygame.SRCALPHA)
-        darkness.fill((0, 0, 5, 226))
+        # Throne room (level 6) is lit up; every other floor stays dark.
+        darkness.fill((0, 0, 5, 90 if self.level == 6 else 226))
         px, py = int(player.x - camx), int(player.y - camy - 12)
         pygame.draw.circle(darkness, (0, 0, 0, 0), (px, py), 92)
         pygame.draw.circle(darkness, (0, 0, 0, 38), (px, py), 132)
         for tx, ty in self.torches:
             lx, ly = tx * T + 16 - camx, ty * T + 10 - camy
-            pygame.draw.circle(darkness, (0, 0, 0, 40), (lx, ly), 82)
-            pygame.draw.circle(darkness, (0, 0, 0, 0), (lx, ly), 48)
+            pygame.draw.circle(darkness, (0, 0, 0, 40), (lx, ly), 130 if self.level == 6 else 82)
+            pygame.draw.circle(darkness, (0, 0, 0, 0), (lx, ly), 80 if self.level == 6 else 48)
+        if self.level == 6 and self.world.exit_open:
+            ex, ey = self.world.exit_tile
+            lx, ly = ex * T + 16 - camx, ey * T + 16 - camy
+            pygame.draw.circle(darkness, (0, 0, 0, 60), (lx, ly), 150)
+            pygame.draw.circle(darkness, (0, 0, 0, 0), (lx, ly), 80)
         if combat:
             combat.cut_light(darkness, camx, camy)
         surf.blit(darkness, (0, 0))

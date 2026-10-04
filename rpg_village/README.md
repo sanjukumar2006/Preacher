@@ -69,3 +69,25 @@ Every monster in the dungeon is now hostile. All the code is in `combat.py` (tun
 - **Mages** (dark / fire / ice mages, witches, imps): keep their distance, charge a spell with a visible aim line, then fire slow bolts (some fire a 3-bolt fan). Sidestep or roll through them.
 - Monsters flinch when hit (heavy ones - ogres, brutes, dragons - do not), wake their neighbours, and fade out when slain.
 - Each floor has its own mix and gets a bit tougher (more monsters, more HP and damage). Monsters respawn when you re-enter a floor.
+
+## Final boss update - GRIMHORN, Warden of the Hollow
+Clear every monster on **floor 5**: the purple altar becomes a glowing **gate**. Stand next to it and press **E** to enter
+**Grimhorn's throne room**. He sits on his throne and speaks; when the speech ends he stands and the fight begins.
+The boss fight uses **real damage** (even while `INFINITE_HP` is on); if you are knocked out, you restart at the hall entrance
+and Grimhorn returns to his throne at full health. When he falls, the east wall crumbles into a glowing path that ends in a
+**portal** - walk into it to be teleported back outside to Hearthmoor.
+
+Code is in `boss.py` (tuning numbers at the top). Sprite: `assets/boss/shaman.png`, sliced from `shaman_source.png` by
+`tools/make_shaman_sheet.py` (rows: down, left, up, right; 3 walk frames each).
+
+Quick test: `python main.py --boss-test` (jumps straight to the throne room).
+
+| Phase | Health | New behaviour |
+|---|---|---|
+| 1 | 100-66% | spear **thrust** (long red lane), ground **slam** (red circle), 5-bolt **fan** |
+| 2 | 66-33% | faster; **horn charge** (if he hits a wall he is stunned and takes x1.5 damage); summons 2 skeletons |
+| 3 | 33-0%  | enraged: fastest, 7-bolt fans fired twice, slams throw a ring of 8 bolts; summons a wraith, dark mage and witch |
+
+He is immune while rising, roaring (phase changes) and dying. Beating him shows a victory screen (press **E**), plays the village
+music and unseals the stairs. He does not return once defeated. `INFINITE_HP` in `combat.py` still applies - set it to `False`
+for a real fight.

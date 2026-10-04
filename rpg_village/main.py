@@ -12,6 +12,9 @@ In the dungeon (battle):
   LEFT MOUSE (hold)    attack with the equipped weapon, aimed at the cursor
   RIGHT MOUSE / SCROLL swap between sword and magic
   SPACE                dodge roll (invincible while rolling)
+
+Final boss: clear floor 5, step up to the purple gate and press E - it leads to Grimhorn's throne room.
+Beat him and a path opens that teleports you back to the village. Test quickly with:  python main.py --boss-test
 """
 import argparse
 import math
@@ -123,6 +126,10 @@ class Game:
         self.player = Player(hx * T + 16, hy * T + 28, self.a["characters"]["hero"])
         self.combat = Combat(self.dungeon, self.player)
         self.combat.toast = self.toast
+        self.combat.on_victory = lambda: self.play_music("hearth_and_willow.mp3", fade_ms=2500)
+        self.combat.on_boss_intro = self.boss_intro
+        self.combat.on_boss_start = lambda: self.play_music("dark.mp3", fade_ms=400)
+        self.tele_t = 0.0
         self.mouse_hidden = False
         self.npcs = []
         for d in NPCS:
@@ -294,6 +301,9 @@ class Game:
         if self.scene != "dungeon":
             return
         old = self.dungeon.level
+        if direction == "gate":
+            self.enter_throne_room()
+            return
         if direction == "down" and old < self.dungeon.max_level:
             new = old + 1
             self.dungeon.set_level(new, spawn="down")
@@ -316,6 +326,47 @@ class Game:
             self.banner_t = 2.8
             self.toast(f"Returned to floor {new}/5", 2.2)
         self.dungeon.cam = [max(0, self.player.x - VIEW_W / 2), max(0, self.player.y - VIEW_H / 2)]
+
+    def boss_intro(self):
+        """Grimhorn speaks from his throne, then stands up and the fight starts."""
+        from boss import BOSS_NAME, BOSS_TITLE, load_sprite
+        portrait = load_sprite()[2]
+        if self.combat.boss_tries == 0:
+            lines = [
+                "Hmmm... so the stones did not lie. Another little light crawls down into my hall.",
+                "For a thousand winters I have kept the Hollow Below. Every hero who passed the Sanctum became bones at my feet.",
+                "You cut through my servants. Impressive - for a village rat. Hearthmoor will sing of you... if anyone is left to sing.",
+                "Come, then. Let me see if your blade is as sharp as your pride. RISE - AND DIE!",
+            ]
+        else:
+            lines = ["Back already? Good. I was just getting comfortable.", "Again, then. And this time, do try to last."]
+        self.dialogue.start(BOSS_NAME, BOSS_TITLE, lines, portrait, on_end=self.combat.start_boss_fight)
+
+    def enter_throne_room(self):
+        """The purple gate on floor 5 -> Grimhorn's throne room."""
+        if not self.combat.cleared:
+            self.toast("The gate is sealed. Slay every monster on this floor first.", 3.0)
+            return
+        if self.combat.boss_defeated:
+            self.toast("The gate is dormant. The Warden is gone.", 3.0)
+            return
+        self.combat.boss_tries = 0
+        self.dungeon.set_level(6, spawn="gate")
+        self.player.x, self.player.y = self.dungeon.player_spawn()
+        self.player.dir = "up"
+        self.player.z = self.player.vz = 0.0
+        self.dungeon.cam = [max(0, self.player.x - VIEW_W / 2), max(0, self.player.y - VIEW_H / 2)]
+        self.banner_text = "The Throne of the Warden"
+        self.banner_t = 3.2
+        self.toast("The gate swallows you. A great hall opens in the dark...", 3.5)
+
+    def debug_boss(self):
+        """--boss-test: drop the hero into floor 5 with the floor already cleared and wake the boss."""
+        self.state = "play"
+        self.enter_dungeon()
+        self.dungeon.set_level(5, spawn="down")
+        self.combat.cleared = True
+        self.enter_throne_room()
 
     def mouse_view(self):
         """Mouse position in the 640x360 game view (also correct when the window is scaled)."""
@@ -359,9 +410,14 @@ class Game:
     def find_target(self):
         if self.scene == "dungeon":
             transition = self.dungeon.next_transition(self.player)
-            if transition:
+            if transition and not self.combat.boss_lock:
                 pos = self.dungeon.world.up if transition == "up" else self.dungeon.world.down
                 return ("dungeon_transition", (transition, pos))
+            w = self.dungeon.world
+            if self.dungeon.level == 5 and w.altar:                    # the purple gate
+                ax, ay = w.altar
+                if math.hypot(self.player.x - (ax * T + 16), (self.player.y - 4) - (ay * T + 16)) < 54:
+                    return ("dungeon_transition", ("gate", w.altar))
             return None
         px, py = self.player.x, self.player.y
         best, bd = None, 1e9
@@ -446,9 +502,16 @@ class Game:
             return
         talking = self.dialogue.active
         if self.music_on:
-            want = 0.22 if talking else (0.32 if self.scene == "dungeon" else 0.45)
+            want = 0.22 if talking else ((0.44 if self.combat.boss_lock else 0.32) if self.scene == "dungeon" else 0.45)
             cur = pygame.mixer.music.get_volume()
             pygame.mixer.music.set_volume(cur + max(-0.01, min(0.01, want - cur)))
+        if self.scene == "dungeon" and self.dialogue.active:           # throne-room speech: the world holds still
+            self.dialogue.update(dt, self.sfx.get("blip"))
+            self.player.moving = False
+            self.player.anim = 0
+            self.target = None
+            self.dungeon.update(dt, self.player)
+            return
         if self.scene == "dungeon":
             mx, my = self.mouse_view()
             cam = self.dungeon.cam
@@ -456,6 +519,19 @@ class Game:
             self.combat.update(dt, keys, aim, pygame.mouse.get_pressed()[0])
             self.target = self.find_target()
             self.dungeon.update(dt, self.player)
+            w = self.dungeon.world
+            if self.dungeon.level == 6 and w.exit_open and self.tele_t == 0:
+                ex, ey = w.exit_tile
+                if math.hypot(self.player.x - (ex * T + 16), (self.player.y - 4) - (ey * T + 16)) < 30:
+                    self.tele_t = 0.001
+                    self.toast("The portal pulls you away...", 2.0)
+            if self.tele_t > 0:
+                self.tele_t += dt
+                if self.tele_t >= 1.3:
+                    self.tele_t = 0.0
+                    self.exit_dungeon()
+                    self.toast("You step out into the sunlight. Hearthmoor is safe at last!", 5.0)
+                    return
             self.update_place()
             self.banner_t = max(0, self.banner_t - dt)
             self.help_t = max(0, self.help_t - dt)
@@ -512,7 +588,10 @@ class Game:
             if self.target and not self.dialogue.active:
                 bob = math.sin(self.t * 5) * 2
                 direction, pos = self.target[1]
-                if direction == "down":
+                if direction == "gate":
+                    label = ("Enter the Purple Gate" if self.combat.cleared and not self.combat.boss_defeated
+                             else ("Dormant gate" if self.combat.boss_defeated else "Sealed - slay all foes"))
+                elif direction == "down":
                     label = "Descend"
                 elif self.dungeon.level == 1:
                     label = "Return to Hearthmoor"
@@ -667,7 +746,8 @@ class Game:
         if self.scene == "dungeon":
             self.panel(v, pygame.Rect(6, 6, 210, 46), 220)
             self.text_shadow(v, self.font_m, "THE HOLLOW BELOW", (14, 10), (220, 204, 238), (25, 18, 30))
-            self.text_shadow(v, self.font_s, f"Floor {self.dungeon.level}/5  •  E: stairs", (14, 30), (190, 180, 205))
+            hint = "Floor %d/5  •  E: stairs" % self.dungeon.level if self.dungeon.level < 6 else "Throne Room  •  defeat the Warden"
+            self.text_shadow(v, self.font_s, hint, (14, 30), (190, 180, 205))
             if self.banner_t > 0:
                 txt = self.font_m.render(self.banner_text, True, (235, 224, 246))
                 w = txt.get_width() + 36
@@ -678,6 +758,13 @@ class Game:
                 v.blit(s, ((VIEW_W - w) // 2, 12))
             self.draw_toasts(v)
             self.combat.draw_hud(v, self.font, self.font_s, self.mouse_view())
+            self.dialogue.draw(v)
+            if self.tele_t > 0:                                  # portal flash
+                a = min(255, int(255 * self.tele_t / 1.2))
+                flash = pygame.Surface((VIEW_W, VIEW_H))
+                flash.fill((235, 215, 255))
+                flash.set_alpha(a)
+                v.blit(flash, (0, 0))
             return
         # clock / progress
         hh, mm = int(self.time), int((self.time % 1) * 60) // 5 * 5
@@ -845,7 +932,9 @@ class Game:
                 self.time = (self.time + 1) % 24
                 self.toast("Time passes...", 1.5)
             elif k in (pygame.K_e, pygame.K_RETURN, pygame.K_KP_ENTER) and not self.show_map:
-                if self.dialogue.active:
+                if self.scene == "dungeon" and self.combat.victory_active:
+                    self.combat.dismiss_victory()
+                elif self.dialogue.active:
                     self.dialogue.advance()
                 else:
                     self.interact()
@@ -872,11 +961,15 @@ def main():
     ap.add_argument("--seed", type=int, default=7, help="terrain seed (default 7)")
     ap.add_argument("--skip-title", action="store_true")
     ap.add_argument("--regen-assets", action="store_true", help="re-create all art before starting")
+    ap.add_argument("--boss-test", action="store_true", help="start on floor 5 and fight the final boss immediately")
     args = ap.parse_args()
     if args.regen_assets:
         import generate_assets
         generate_assets.main()
-    Game(seed=args.seed, skip_title=args.skip_title).run()
+    game = Game(seed=args.seed, skip_title=args.skip_title or args.boss_test)
+    if args.boss_test:
+        game.debug_boss()
+    game.run()
 
 
 if __name__ == "__main__":

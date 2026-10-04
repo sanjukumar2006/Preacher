@@ -10,6 +10,10 @@ ENEMIES  (every dungeon monster is hostile)
   mage   - keep their distance, charge (aim line appears), then fire slow bolts. Dodge or roll through.
 
 Player health is infinite for now: set INFINITE_HP = False to turn damage on.
+
+FINAL BOSS  (boss.py)
+  Clear every monster on floor 5 and GRIMHORN, Warden of the Hollow, rises from the floor. The stairs stay sealed
+  until he is dead; then a victory screen is shown.
 """
 import array
 import math
@@ -22,7 +26,7 @@ from dungeon import DH, DW, FLOOR, LAVA, PILLAR, T, WALL, WATER
 from entities import DIRS, Mover
 
 # --------------------------------------------------------------------------- tuning
-INFINITE_HP = True          # <- flip to False later to make enemy hits actually hurt
+INFINITE_HP = False          # <- flip to False later to make enemy hits actually hurt
 PLAYER_MAX_HP = 100
 CHEST = 14                  # px between a character's feet and its chest (hit / aim centre)
 
@@ -176,6 +180,15 @@ class Sfx:
         self.s["roll"] = mk(.22, lambda t, p: n4() * sn(math.pi * p) * 1.8, .4)
         self.s["hurt"] = mk(.22, lambda t, p: (1 if sn(tau * (240 - 110 * p) * t) > 0 else -1) * .5 * (1 - p), .35)
         self.s["die"] = mk(.38, lambda t, p: (((t * (300 - 220 * p)) % 1) * 2 - 1) * .6 * (1 - p) ** 1.3 + n5() * .25 * (1 - p), .4)
+        self.s["roar"] = mk(1.1, lambda t, p: ((((t * (62 + 22 * sn(tau * 5 * t))) % 1) * 2 - 1) * .8 + n3() * .7)
+                            * sn(math.pi * p) ** .6, .55)
+        self.s["slam"] = mk(.42, lambda t, p: (n3() * 2.2 + sn(tau * (62 - 36 * p) * t) * 1.4) * (1 - p) ** 2.2, .7)
+
+        def win(t, p):
+            seq = (392, 494, 587, 784)
+            i, lp = min(3, int(p * 4)), (p * 4) % 1
+            return sn(tau * seq[i] * t) * .5 * (1 - lp) ** .6 + sn(tau * seq[i] * 2 * t) * .15 * (1 - lp)
+        self.s["win"] = mk(1.4, win, .4)
         self.s["swap"] = mk(.08, lambda t, p: sn(tau * (700 if p < .5 else 1000) * t) * .6 * (1 - (p % .5) * 2), .35)
 
     def play(self, name):
@@ -202,6 +215,9 @@ class Bolt:
 
 # --------------------------------------------------------------------------- enemies
 class Enemy(Mover):
+    is_boss = False
+    chest = CHEST                  # height of the hit / aim centre above the feet (the boss is taller)
+
     def __init__(self, key, tx, ty, level, getframes):
         super().__init__(tx * T + 16, ty * T + 26)
         d = MONSTERS[key]
@@ -421,6 +437,16 @@ class Combat:
         self.flow = None
         self.flow_tile = None
         self.flow_t = 0.0
+        self.boss_defeated = False            # final boss (boss.py)
+        self.victory = self.victory_done = False
+        self.victory_t = 0.0
+        self.boss_time = 0.0
+        self.seal_cd = 0.0
+        self.on_boss_start = lambda: None     # main.py plugs music changes in here
+        self.on_boss_intro = lambda: None     # main.py plugs the throne-room speech in here
+        self.intro_started = False
+        self.boss_tries = 0
+        self.on_victory = lambda: None
         self.reset_player_state()
         self.clear_level_state()
         dungeon.on_level = self.load_level
@@ -451,6 +477,8 @@ class Combat:
         self.slashes, self.texts, self.ghosts = [], [], []
         self.cleared = False
         self.total = 0
+        self.boss = None
+        self.boss_time = 0.0
 
     # ------------------------------------------------------------------ level setup
     def load_level(self):
@@ -459,6 +487,10 @@ class Combat:
         self.clear_level_state()
         self.reset_player_state()
         self.flow = None
+        if level == 6:                                       # throne room: no wandering monsters, just the Warden
+            self.total = 0
+            self.spawn_throne_boss()
+            return
         melee_pool, mage_pool = FLOOR_POOLS[level]
         rng = random.Random(level * 977 + 13)
         n = 5 + level
@@ -607,19 +639,26 @@ class Combat:
     def damage_enemy(self, e, dmg, ang, knock):
         if not e.alive:
             return
+        if e.is_boss and e.immune:                         # rising / roaring / dying: nothing gets through
+            if e.immune_cd <= 0:
+                e.immune_cd = 0.5
+                self.text("Immune", e.x, e.y - e.chest - 40, (190, 190, 225), .6)
+            self.burst(e.x, e.y - e.chest, (190, 190, 225), 3, 90, .25)
+            return
+        dmg = max(1, int(round(dmg * getattr(e, "dmg_mul", 1.0))))
         e.hp -= dmg
         e.flash, e.hp_show = 0.12, 2.5
         e.wake(self)
-        kn = knock * (0.35 if e.big else 1.0)
+        kn = knock * getattr(e, "knock_mul", 0.35 if e.big else 1.0)
         e.kv = [math.cos(ang) * kn, math.sin(ang) * kn]
         e.kb_t = 0.2
-        self.text(str(dmg), e.x, e.y - 34, (255, 240, 150))
-        self.burst(e.x, e.y - CHEST, e.d["color"], 7, 120, .35)
+        self.text(str(dmg), e.x, e.y - e.chest - 20, (255, 240, 150))
+        self.burst(e.x, e.y - e.chest, e.d["color"], 7, 120, .35)
         self.sfx.play("hit")
         if e.hp <= 0:
             e.die(self)
             self.kills += 1
-            self.burst(e.x, e.y - CHEST, e.d["color"], 22, 170, .6, 3)
+            self.burst(e.x, e.y - e.chest, e.d["color"], 22, 170, .6, 3)
             self.sfx.play("die")
             self.shake(2, 0.15)
         elif not e.big:
@@ -637,7 +676,7 @@ class Combat:
         if self.invuln > 0:
             return False
         self.hits_taken += 1
-        if not INFINITE_HP:
+        if not INFINITE_HP or self.boss_lock:                # the boss fight always uses real damage
             self.hp = max(0, self.hp - dmg)
         self.invuln, self.hurt_flash = 0.55, 0.3
         a = math.atan2(p.y - sy, p.x - sx)
@@ -648,7 +687,10 @@ class Combat:
         self.burst(p.x, p.y - CHEST, (255, 70, 70), 10, 110, .4)
         self.sfx.play("hurt")
         self.shake(3, 0.2)
-        if self.hp <= 0:                                   # only reachable when INFINITE_HP is False
+        if self.hp <= 0:                                   # only reachable when INFINITE_HP is False / boss fight
+            if self.boss_lock:
+                self.reset_boss_fight()
+                return True
             self.hp = self.max_hp
             self.toast("You were knocked out - health restored", 3)
         return True
@@ -707,7 +749,7 @@ class Combat:
         for e in self.enemies:
             if not e.alive:
                 continue
-            dx, dy = e.x - cx, (e.y - CHEST) - cy
+            dx, dy = e.x - cx, (e.y - e.chest) - cy
             d = math.hypot(dx, dy)
             if d > SWORD["reach"] + e.r:
                 continue
@@ -716,12 +758,81 @@ class Combat:
                 continue
             self.damage_enemy(e, SWORD["damage"], a, SWORD["knock"])
 
+    # ------------------------------------------------------------------ final boss
+    @property
+    def boss_lock(self):
+        """True from the moment the boss rises until he is dead: the stairs are sealed."""
+        return self.boss is not None and self.boss.state != "dead"
+
+    @property
+    def victory_active(self):
+        return self.victory and not self.victory_done
+
+    def spawn_throne_boss(self):
+        """Grimhorn sits on his throne (immune) until the hero walks into the hall and the speech ends."""
+        from boss import Boss
+        tx, ty = self.world.throne
+        self.boss = Boss(tx * T + 16, ty * T + 26, self.dungeon.level)
+        self.enemies.append(self.boss)
+        self.boss_time = 0.0
+        self.seal_cd = 3.0
+        self.intro_started = False
+
+    def start_boss_fight(self):
+        """The speech is over: the Warden stands up."""
+        if self.boss is not None:
+            self.boss.awaken(self)
+            self.on_boss_start()
+
+    def reset_boss_fight(self):
+        """Hero knocked out during the boss fight: back to the entrance, Grimhorn back on his throne."""
+        self.boss_tries += 1
+        d = self.dungeon
+        d.set_level(6, spawn="gate")                         # reloads the room (fresh boss) via load_level
+        p = self.player
+        p.x, p.y = d.player_spawn()
+        p.dir = "up"
+        d.cam = [max(0, p.x - VIEW_W / 2), max(0, p.y - VIEW_H / 2)]
+        self.hp = self.max_hp
+        self.toast("You were knocked out... Grimhorn returns to his throne.", 3.5)
+
+    def _win(self):
+        self.victory, self.victory_done, self.victory_t = True, False, 0.0
+        self.boss_defeated = True
+        self.hp = self.max_hp
+        self.sfx.play("win")
+        self.on_victory()
+
+    def dismiss_victory(self):
+        if self.victory_active and self.victory_t > 1.8:
+            self.victory_done = True
+            self.world.open_exit()
+            self.shake(6, 1.2)
+            self.sfx.play("boom")
+            ex, ey = self.world.exit_tile
+            for x, y in self.world.exit_cells[::2]:
+                self.burst(x * T + 16, y * T + 16, (170, 150, 190), 10, 120, .7, 3)
+            self.toast("The east wall crumbles - a path opens. Follow the light home.", 5.0)
+            return True
+        return self.victory_active
+
+    def debug_start_boss(self):
+        """Used by `main.py --boss-test`: wipe the floor and summon the boss straight away."""
+        self.cleared = True
+        self.intro_started = True
+        self.boss.awaken(self)
+
     # ------------------------------------------------------------------ update
     def update(self, dt, keys, aim_pt, firing):
         p, world = self.player, self.world
         self.t += dt
         for name in ("atk_cd", "roll_cd", "invuln", "hurt_flash", "swap_cd", "face_t", "dodge_msg_cd", "shake_t"):
             setattr(self, name, max(0.0, getattr(self, name) - dt))
+        if self.victory_active:                              # actors freeze while the victory screen is up
+            self.victory_t += dt
+            self._update_bolts(dt)
+            self._update_fx(dt)
+            return
         self.aim = math.atan2(aim_pt[1] - (p.y - CHEST), aim_pt[0] - p.x)
         live_feet = [e.foot for e in self.enemies if e.alive]
 
@@ -774,7 +885,25 @@ class Combat:
         self.enemies = [e for e in self.enemies if not (e.state == "dead" and e.dead_t > 0.6)]
         if self.total and not self.cleared and self.alive_count() == 0:
             self.cleared = True
-            self.toast("Floor cleared! The stairs are safe.", 3.5)
+            if self.dungeon.level == 5 and not self.boss_defeated:
+                self.toast("Floor cleared! The purple gate hums... step up to it and press E.", 5.0)
+            elif self.dungeon.level == 5:
+                self.toast("Floor cleared.", 2.5)
+            else:
+                self.toast("Floor cleared! The stairs are safe.", 3.5)
+        if self.boss is not None:
+            if self.boss.state not in ("seated", "rise", "dead"):
+                self.boss_time += dt
+            if self.boss.state == "dead" and not self.victory:
+                self._win()
+            if (self.boss.state == "seated" and not self.intro_started
+                    and p.y < self.boss.y + 8.5 * T):          # the hero walks into the hall: he speaks
+                self.intro_started = True
+                self.on_boss_intro()
+            self.seal_cd = max(0.0, self.seal_cd - dt)
+            if self.boss_lock and self.seal_cd <= 0 and self.dungeon.next_transition(p):
+                self.seal_cd = 4.0
+                self.toast("The stairs are sealed until the Warden falls!", 2.5)
 
         self._update_bolts(dt)
         self._update_fx(dt)
@@ -792,7 +921,7 @@ class Combat:
                     b.dead = True
                 elif b.owner == "player":
                     for e in self.enemies:
-                        if e.alive and math.hypot(e.x - b.x, (e.y - CHEST) - b.y) <= e.r + b.radius:
+                        if e.alive and math.hypot(e.x - b.x, (e.y - e.chest) - b.y) <= e.r + b.radius:
                             self.damage_enemy(e, b.dmg, b.ang, MAGIC["knock"])
                             b.dead = True
                             break
@@ -872,6 +1001,9 @@ class Combat:
     def _draw_enemy(self, surf, e, camx, camy, shadow):
         sx, sy = int(e.x) - camx, int(e.y) - camy
         if not (-48 < sx < VIEW_W + 48 and -64 < sy < VIEW_H + 64):
+            return
+        if e.is_boss:
+            e.draw(self, surf, camx, camy, shadow)
             return
         fr = e.frames[e.dir]
         if e.moving:
@@ -955,9 +1087,10 @@ class Combat:
         p = self.player
         for e in self.enemies:
             if e.alive and (e.state != "idle" or math.hypot(e.x - p.x, e.y - p.y) < 180):
-                pos = (int(e.x - camx), int(e.y - CHEST - camy))
-                pygame.draw.circle(darkness, (0, 0, 0, 120), pos, 30)
-                pygame.draw.circle(darkness, (0, 0, 0, 70), pos, 18)
+                pos = (int(e.x - camx), int(e.y - e.chest - camy))
+                big = 2.2 if e.is_boss else 1.0
+                pygame.draw.circle(darkness, (0, 0, 0, 120), pos, int(30 * big))
+                pygame.draw.circle(darkness, (0, 0, 0, 70), pos, int(18 * big))
         if self.weapon == "magic":
             a = self.aim
             pos = (int(p.x + math.cos(a) * 13 - camx), int(p.y - CHEST + math.sin(a) * 13 - camy))
@@ -995,6 +1128,10 @@ class Combat:
             glow(fx, ox, oy, 14 if self.atk_t > 0 else 9, (110, 190, 255), 0.9 if self.atk_t > 0 else 0.55)
         # monster telegraphs
         for e in self.enemies:
+            if e.is_boss:
+                if e.state != "dead":
+                    e.draw_fx(self, fx, S)
+                continue
             if e.state != "windup":
                 continue
             k = e.windup_progress()
@@ -1033,7 +1170,7 @@ class Combat:
         """Health bars and floating numbers (drawn on top of everything in the world)."""
         camx, camy = self.cam_used
         for e in self.enemies:
-            if e.alive and e.hp_show > 0:
+            if e.alive and e.hp_show > 0 and not e.is_boss:
                 sx, sy = int(e.x) - camx, int(e.y) - camy - 38 - (5 if e.fly else 0)
                 w = 26
                 pygame.draw.rect(surf, (18, 8, 12), (sx - w // 2 - 1, sy - 1, w + 2, 5))
@@ -1070,11 +1207,12 @@ class Combat:
         x0, y0 = px + 8, py + 7
         v.blit(font_s.render("HP", True, (230, 215, 235)), (x0, y0 + 1))
         bar = pygame.Rect(x0 + 22, y0, 168, 12)
-        frac = 1.0 if INFINITE_HP else self.hp / self.max_hp
+        real = (not INFINITE_HP) or self.boss_lock
+        frac = self.hp / self.max_hp if real else 1.0
         pygame.draw.rect(v, (40, 14, 20), bar, border_radius=4)
         pygame.draw.rect(v, (190, 44, 60), (bar.x, bar.y, int(bar.w * frac), bar.h), border_radius=4)
         pygame.draw.rect(v, (255, 210, 220), bar, 1, border_radius=4)
-        if INFINITE_HP:
+        if not real:
             draw_infinity(v, bar.centerx, bar.centery, 10, (255, 255, 255))
         else:
             t = font_s.render(f"{self.hp}/{self.max_hp}", True, (255, 255, 255))
@@ -1106,7 +1244,10 @@ class Combat:
         v.blit(font_s.render("LMB attack   RMB/scroll swap", True, (160, 150, 180)), (dx0 - 4, y0 + 56))
         # foes remaining (top-right)
         left = self.alive_count()
-        label = f"Foes left: {left}" if left else "Floor clear"
+        if self.boss_lock:
+            label = "BOSS FIGHT" if left <= 1 else f"BOSS FIGHT  +{left - 1} minions"
+        else:
+            label = f"Foes left: {left}" if left else "Floor clear"
         img = font.render(label, True, (235, 224, 246) if left else (170, 240, 170))
         w = img.get_width() + 18
         box = pygame.Surface((w, 22), pygame.SRCALPHA)
@@ -1114,6 +1255,11 @@ class Combat:
         pygame.draw.rect(box, (148, 122, 168, 230), box.get_rect(), 1, border_radius=7)
         box.blit(img, (9, 4))
         v.blit(box, (VIEW_W - w - 6, 6))
+        if self.boss is not None:
+            self.boss.draw_ui(self, v, font, font_s)
+        if self.victory_active:
+            from boss import draw_victory
+            draw_victory(self, v, font, font_s)
         # crosshair
         mx, my = int(mouse[0]), int(mouse[1])
         col = (255, 230, 150) if self.weapon == "sword" else (140, 210, 255)

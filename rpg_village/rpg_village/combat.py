@@ -22,7 +22,7 @@ from dungeon import DH, DW, FLOOR, LAVA, PILLAR, T, WALL, WATER
 from entities import DIRS, Mover
 
 # --------------------------------------------------------------------------- tuning
-INFINITE_HP = True          # <- flip to False later to make enemy hits actually hurt
+INFINITE_HP = False          # <- flip to False later to make enemy hits actually hurt
 PLAYER_MAX_HP = 100
 CHEST = 14                  # px between a character's feet and its chest (hit / aim centre)
 
