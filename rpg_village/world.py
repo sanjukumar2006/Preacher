@@ -206,9 +206,17 @@ class World:
             self.road(pts[15:], 2)
         self.north_end = north[-1]
         self.road([(CX + 23, CY + 0.5 + wig(28)), (73, 44), (76, 40), (78.5, 37.5)], 2)   # trail to camp
-        # south lane
+        # south lane + the road to the dungeon at the far southern edge
         self.road([(24, 60.5), (62, 60.5)], 2)
         self.road([(61.5, 60.5), (61.5, 66.5)], 2)
+        self.road([(48.5, 60.0), (48.5, 88.5)], 2.5)
+        self.interact.append(dict(
+            rect=pygame.Rect(46 * T, 86 * T, 5 * T, 3 * T),
+            name="Dungeon Entrance",
+            text=["A black stone arch yawns beneath the trees.",
+                  "Cold air rises from the darkness below. There is no sign of where the passage leads.",
+                  "Press E to descend into The Hollow Below."]
+        ))
         # plaza
         for y in range(H):
             for x in range(W):

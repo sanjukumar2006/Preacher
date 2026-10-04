@@ -40,3 +40,13 @@ automatically. If `assets/rpgmaker/` is deleted, the game falls back to its buil
 (Those sprite sheets stay under their own RPG Maker license terms.)
 
 Notes: the village houses have no interiors in this version (doors are interactable with a hint).
+
+## Dungeon update
+- The far southern road now leads to **The Hollow Below**, a dark underground dungeon.
+- The dungeon is now **5 hand-crafted floors**, with connected rooms, corridors, pillars, stone walls, staircases and themed hazards.
+- Floor 1 is the catacombs; deeper floors become flooded, volcanic, frozen and finally an ancient sanctum.
+- Press **E** at the staircase to descend or climb. On Floor 1, the upper staircase returns to Hearthmoor.
+- The supplied RPG Maker dungeon tiles are used for the stonework, stairs, water and lava, and the supplied monster sheets are used as decorative idle monsters.
+- Monsters are currently decorative/idle only; there are **no battle mechanics yet**.
+- The dungeon is intentionally very dark. Torches and the player's local light create the main visibility.
+- Entering the dungeon switches background music to `assets/music/dark.mp3`; returning to the village restores `hearth_and_willow.mp3`.

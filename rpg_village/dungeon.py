@@ -1,0 +1,406 @@
+"""Hand-crafted five-level dungeon for Hearthmoor.
+
+The dungeon is exploration-only for now: monsters are visual/animated and do not
+start combat. Each floor has a deliberate room/corridor layout, a staircase to
+the next floor, and a staircase back up. The village entrance is on level 1.
+"""
+import math
+import pygame
+
+T = 32
+DW, DH = 36, 24
+FLOOR, WALL, WATER, LAVA, PILLAR = range(5)
+
+
+class DungeonWorld:
+    def __init__(self, level=1):
+        self.level = level
+        self.grid = [[WALL for _ in range(DW)] for _ in range(DH)]
+        self._build(level)
+
+    def _set_floor(self, x, y, kind=FLOOR):
+        if 0 <= x < DW and 0 <= y < DH:
+            self.grid[y][x] = kind
+
+    def room(self, x0, y0, x1, y1, kind=FLOOR):
+        x0, y0 = max(1, x0), max(1, y0)
+        x1, y1 = min(DW - 2, x1), min(DH - 2, y1)
+        for y in range(y0, y1 + 1):
+            for x in range(x0, x1 + 1):
+                self._set_floor(x, y, kind)
+
+    def corridor_h(self, x0, x1, y, width=2):
+        lo, hi = sorted((x0, x1))
+        for yy in range(y - width // 2, y + width - width // 2):
+            for x in range(lo, hi + 1):
+                self._set_floor(x, yy)
+
+    def corridor_v(self, y0, y1, x, width=2):
+        lo, hi = sorted((y0, y1))
+        for xx in range(x - width // 2, x + width - width // 2):
+            for y in range(lo, hi + 1):
+                self._set_floor(xx, y)
+
+    def pillar(self, x, y):
+        if 1 <= x < DW - 1 and 1 <= y < DH - 1:
+            self.grid[y][x] = PILLAR
+
+    def _build(self, level):
+        # A deliberate, room-based layout rather than scattered/random tiles.
+        if level == 1:
+            # Forgotten Catacombs: long nave + six burial chambers.
+            self.room(14, 18, 21, 22)
+            self.corridor_v(12, 19, 17, 3)
+            self.room(11, 10, 23, 14)
+            self.corridor_v(5, 11, 17, 3)
+            self.room(13, 2, 21, 6)
+            self.corridor_h(6, 17, 12, 3)
+            self.room(3, 9, 7, 14)
+            self.room(27, 9, 33, 14)
+            self.corridor_h(7, 17, 11, 2)
+            self.corridor_h(17, 27, 12, 2)
+            self.room(4, 16, 9, 20)
+            self.corridor_h(9, 17, 18, 2)
+            self.room(25, 17, 31, 20)
+            self.corridor_h(21, 28, 18, 2)
+            self.down = (18, 3)
+            self.up = (18, 21)
+            self._make_crypts()
+        elif level == 2:
+            # Flooded Halls: symmetrical stone halls around a dry central spine.
+            self.room(15, 1, 20, 22)
+            self.room(3, 8, 32, 15)
+            self.room(4, 3, 10, 7)
+            self.room(25, 3, 31, 7)
+            self.room(4, 17, 10, 21)
+            self.room(25, 17, 31, 21)
+            self.corridor_h(10, 15, 5, 2)
+            self.corridor_h(20, 25, 5, 2)
+            self.corridor_h(10, 15, 19, 2)
+            self.corridor_h(20, 25, 19, 2)
+            # Water is decorative but blocked, creating dangerous-looking side pools.
+            for r in ((5, 9, 10, 11), (25, 9, 30, 11), (5, 13, 10, 14), (25, 13, 30, 14)):
+                self.room(*r, WATER)
+            self.room(15, 1, 20, 3)
+            self.down, self.up = (17, 2), (17, 21)
+            for p in ((13, 6), (22, 6), (13, 17), (22, 17)):
+                self.pillar(*p)
+        elif level == 3:
+            # Ashen Mines: a broad central mine with lava fissures and support pillars.
+            self.room(3, 3, 32, 20)
+            self.room(8, 1, 27, 22)
+            # Cut out deep side voids to form mine galleries.
+            for y in range(4, 20):
+                self.grid[y][3] = WALL
+                self.grid[y][32] = WALL
+            for r in ((5, 5, 10, 8), (25, 5, 30, 8), (5, 15, 10, 18), (25, 15, 30, 18), (14, 10, 21, 13)):
+                self.room(*r, LAVA)
+            # Restore corridors through the lava chamber.
+            self.corridor_v(8, 15, 12, 2)
+            self.corridor_v(8, 15, 23, 2)
+            self.corridor_h(10, 25, 11, 2)
+            self.corridor_v(3, 8, 17, 3)
+            self.down, self.up = (17, 3), (17, 20)
+            for p in ((12, 6), (23, 6), (12, 17), (23, 17), (17, 15), (17, 7)):
+                self.pillar(*p)
+        elif level == 4:
+            # Frozen Vault: four chambers connected by a central cross-shaped hall.
+            self.room(14, 9, 21, 14)
+            self.room(3, 2, 11, 7)
+            self.room(24, 2, 32, 7)
+            self.room(3, 16, 11, 21)
+            self.room(24, 16, 32, 21)
+            self.corridor_h(10, 25, 5, 2)
+            self.corridor_h(10, 25, 18, 2)
+            self.corridor_v(6, 18, 17, 3)
+            self.room(15, 10, 20, 13)
+            # Ice patches remain walkable-looking but are blocked to force corridor routes.
+            self.room(5, 3, 9, 5, WATER)
+            self.room(26, 3, 30, 5, WATER)
+            self.room(5, 18, 9, 20, WATER)
+            self.room(26, 18, 30, 20, WATER)
+            self.down, self.up = (17, 3), (17, 18)
+            for p in ((13, 8), (22, 8), (13, 15), (22, 15)):
+                self.pillar(*p)
+        else:
+            # Level 5: Ancient Sanctum. Large final chamber with an altar.
+            self.room(12, 2, 23, 6)
+            self.room(4, 8, 31, 19)
+            self.room(10, 19, 25, 22)
+            self.corridor_v(6, 9, 17, 3)
+            self.corridor_h(8, 17, 12, 3)
+            self.corridor_h(17, 31, 12, 3)
+            self.down = None
+            self.up = (17, 20)
+            for p in ((8, 10), (11, 10), (23, 10), (26, 10), (8, 17), (26, 17),
+                      (14, 15), (20, 15), (14, 18), (20, 18)):
+                self.pillar(*p)
+            self.altar = (17, 4)
+
+        # Hard outer boundary.
+        for x in range(DW):
+            self.grid[0][x] = WALL
+            self.grid[DH - 1][x] = WALL
+        for y in range(DH):
+            self.grid[y][0] = WALL
+            self.grid[y][DW - 1] = WALL
+
+        # Stair tiles are always safe floor.
+        if self.up:
+            self._set_floor(*self.up)
+        if self.down:
+            self._set_floor(*self.down)
+
+    def _make_crypts(self):
+        # Small blocked pits and columns make the catacombs read as a real burial dungeon.
+        for p in ((5, 10), (5, 13), (29, 10), (29, 13), (6, 18), (29, 18),
+                  (15, 10), (20, 10), (15, 14), (20, 14)):
+            self.pillar(*p)
+
+    def inb(self, x, y):
+        return 0 <= x < DW and 0 <= y < DH
+
+    def rect_blocked(self, r):
+        x0, x1 = int(r.left // T), int((r.right - 1) // T)
+        y0, y1 = int(r.top // T), int((r.bottom - 1) // T)
+        for yy in range(y0, y1 + 1):
+            for xx in range(x0, x1 + 1):
+                if not self.inb(xx, yy) or self.grid[yy][xx] in (WALL, WATER, LAVA, PILLAR):
+                    return True
+        return False
+
+    def walkable_tile(self, x, y):
+        return self.inb(x, y) and self.grid[y][x] == FLOOR
+
+    def nearest_walkable(self, x, y):
+        for r in range(12):
+            for dy in range(-r, r + 1):
+                for dx in range(-r, r + 1):
+                    if max(abs(dx), abs(dy)) == r and self.walkable_tile(x + dx, y + dy):
+                        return x + dx, y + dy
+        return self.up or (17, 20)
+
+
+class Dungeon:
+    def __init__(self, assets):
+        self.assets = assets
+        self.level = 1
+        self.max_level = 5
+        self.world = DungeonWorld(1)
+        self.t = 0.0
+        self.cam = [0.0, 0.0]
+        self._load_tiles()
+        self._load_monsters()
+        self.set_level(1, spawn="entrance")
+
+    def _load_tiles(self):
+        a5 = self.assets["Dungeon_A5"]
+        # Chosen from the gray/black stone portions of the supplied RPG Maker sheet.
+        self.floor_a = a5.subsurface((4 * 32, 13 * 32, 32, 32)).copy()
+        self.floor_b = a5.subsurface((5 * 32, 13 * 32, 32, 32)).copy()
+        self.floor_c = a5.subsurface((6 * 32, 13 * 32, 32, 32)).copy()
+        self.wall = a5.subsurface((4 * 32, 9 * 32, 32, 32)).copy()
+        self.wall2 = a5.subsurface((5 * 32, 9 * 32, 32, 32)).copy()
+        self.wall3 = a5.subsurface((6 * 32, 9 * 32, 32, 32)).copy()
+        self.lava = a5.subsurface((1 * 32, 5 * 32, 32, 32)).copy()
+        self.water = a5.subsurface((2 * 32, 6 * 32, 32, 32)).copy()
+        self.ornament = a5.subsurface((4 * 32, 14 * 32, 32, 32)).copy()
+        self.stairs = a5.subsurface((4 * 32, 15 * 32, 32, 32)).copy()
+
+    def _load_monsters(self):
+        self.monster_frames = {}
+        for sheet_name in ("Monster1", "Monster2"):
+            sheet = self.assets[sheet_name]
+            for row in range(8):
+                self.monster_frames[(sheet_name, row)] = [
+                    sheet.subsurface((col * 32, row * 32, 32, 32)).copy()
+                    for col in range(3)
+                ]
+
+    def _monster_layout(self, level):
+        # Hand-placed ambience. No AI and no combat yet.
+        layouts = {
+            1: [("Monster1", 1, 5, 11, 0), ("Monster1", 2, 28, 11, 1), ("Monster2", 1, 6, 18, 2), ("Monster2", 0, 29, 18, 3)],
+            2: [("Monster2", 1, 7, 6, 0), ("Monster1", 0, 27, 6, 1), ("Monster2", 2, 7, 17, 2), ("Monster1", 2, 28, 17, 3)],
+            3: [("Monster1", 2, 6, 10, 0), ("Monster2", 2, 28, 10, 1), ("Monster1", 0, 8, 19, 2), ("Monster2", 0, 27, 19, 3)],
+            4: [("Monster2", 0, 7, 6, 0), ("Monster1", 1, 28, 6, 1), ("Monster2", 1, 7, 18, 2), ("Monster1", 2, 28, 18, 3)],
+            5: [("Monster1", 0, 7, 12, 0), ("Monster2", 2, 27, 12, 1), ("Monster1", 1, 9, 17, 2), ("Monster2", 0, 25, 17, 3)],
+        }
+        out = []
+        for sheet, row, x, y, phase in layouts[level]:
+            if self.world.walkable_tile(x, y):
+                out.append((sheet, row, x, y, phase * 0.7))
+        return out
+
+    def set_level(self, level, spawn="entrance"):
+        self.level = max(1, min(self.max_level, level))
+        self.world = DungeonWorld(self.level)
+        self.monsters = self._monster_layout(self.level)
+        self.torches = self._make_torches()
+        self.cracks = self._make_details()
+        self._set_spawn(spawn)
+
+    def _set_spawn(self, spawn):
+        if spawn == "down" and self.world.up:
+            tx, ty = self.world.up
+        elif spawn == "up" and self.world.down:
+            tx, ty = self.world.down
+        elif spawn == "entrance":
+            tx, ty = (17, 20) if self.level == 1 else (self.world.up or (17, 20))
+        else:
+            tx, ty = self.world.nearest_walkable(17, 20)
+        self.spawn_tile = (tx, ty)
+
+    def player_spawn(self):
+        tx, ty = self.spawn_tile
+        return tx * T + 16, ty * T + 28
+
+    def _make_torches(self):
+        common = {
+            1: [(12, 5), (22, 5), (8, 11), (27, 12), (12, 18), (23, 18)],
+            2: [(12, 5), (23, 5), (12, 12), (23, 12), (12, 19), (23, 19)],
+            3: [(7, 3), (27, 3), (7, 20), (27, 20), (12, 8), (23, 8), (17, 15)],
+            4: [(11, 5), (23, 5), (11, 18), (23, 18), (17, 8), (17, 15)],
+            5: [(10, 9), (24, 9), (10, 18), (24, 18), (17, 7), (17, 20)],
+        }
+        return [p for p in common[self.level] if self.world.walkable_tile(*p)]
+
+    def _make_details(self):
+        patterns = {
+            1: [(10, 7), (24, 7), (3, 15), (32, 15), (13, 16), (22, 16)],
+            2: [(4, 7), (31, 7), (4, 16), (31, 16), (13, 8), (22, 8)],
+            3: [(4, 4), (31, 4), (4, 19), (31, 19), (14, 6), (20, 17)],
+            4: [(12, 7), (22, 7), (12, 16), (22, 16)],
+            5: [(6, 8), (29, 8), (6, 19), (29, 19), (12, 16), (22, 16)],
+        }
+        return [p for p in patterns[self.level] if self.world.walkable_tile(*p)]
+
+    def next_transition(self, player):
+        tx, ty = int(player.x // T), int((player.y - 4) // T)
+        if self.world.up and abs(tx - self.world.up[0]) <= 1 and abs(ty - self.world.up[1]) <= 1:
+            return "up"
+        if self.world.down and abs(tx - self.world.down[0]) <= 1 and abs(ty - self.world.down[1]) <= 1:
+            return "down"
+        return None
+
+    def update(self, dt, player):
+        self.t += dt
+        tx = player.x - 320
+        ty = player.y - 180
+        max_x = max(0, DW * T - 640)
+        max_y = max(0, DH * T - 360)
+        target_x = max(0, min(max_x, tx))
+        target_y = max(0, min(max_y, ty))
+        self.cam[0] += (target_x - self.cam[0]) * 0.16
+        self.cam[1] += (target_y - self.cam[1]) * 0.16
+
+    def draw_tile(self, surf, img, sx, sy):
+        surf.blit(img, (sx, sy))
+
+    def draw(self, surf, player, shadow):
+        camx, camy = int(self.cam[0]), int(self.cam[1])
+        surf.fill((4, 4, 7))
+
+        # Full, coherent stone floor/wall layout.
+        for y in range(DH):
+            for x in range(DW):
+                sx, sy = x * T - camx, y * T - camy
+                if sx < -T or sx >= 640 or sy < -T or sy >= 360:
+                    continue
+                tile = self.world.grid[y][x]
+                if tile == WALL:
+                    img = (self.wall2 if (x * 3 + y) % 4 == 0 else self.wall)
+                    self.draw_tile(surf, img, sx, sy)
+                    # Deep seam along the bottom of wall blocks.
+                    pygame.draw.line(surf, (18, 17, 22), (sx, sy + 30), (sx + 31, sy + 30), 2)
+                elif tile == WATER:
+                    self.draw_tile(surf, self.water, sx, sy)
+                elif tile == LAVA:
+                    self.draw_tile(surf, self.lava, sx, sy)
+                elif tile == PILLAR:
+                    self.draw_tile(surf, self.floor_a, sx, sy)
+                    self.draw_tile(surf, self.ornament, sx, sy)
+                else:
+                    img = self.floor_b if (x + y) % 5 == 0 else self.floor_a
+                    self.draw_tile(surf, img, sx, sy)
+
+        # Add a darker grout to the whole floor so it reads as underground stone.
+        grout = pygame.Surface((640, 360), pygame.SRCALPHA)
+        for x in range((-camx) % T, 640, T):
+            pygame.draw.line(grout, (8, 8, 12, 45), (x, 0), (x, 360), 1)
+        for y in range((-camy) % T, 360, T):
+            pygame.draw.line(grout, (8, 8, 12, 45), (0, y), (640, y), 1)
+        surf.blit(grout, (0, 0))
+
+        # Staircases / transitions.
+        for kind, pos in (("up", self.world.up), ("down", self.world.down)):
+            if not pos:
+                continue
+            x, y = pos
+            sx, sy = x * T - camx, y * T - camy
+            surf.blit(self.stairs, (sx, sy))
+            # directional marker
+            pygame.draw.rect(surf, (8, 7, 12, 170), (sx + 5, sy + 4, 22, 22), border_radius=4)
+            if kind == "down":
+                pygame.draw.polygon(surf, (210, 190, 225), [(sx + 16, sy + 8), (sx + 8, sy + 18), (sx + 24, sy + 18)])
+            else:
+                pygame.draw.polygon(surf, (210, 190, 225), [(sx + 8, sy + 14), (sx + 24, sy + 14), (sx + 16, sy + 6)])
+
+        # Level 5 altar.
+        if self.level == 5:
+            x, y = self.world.altar
+            sx, sy = x * T - camx, y * T - camy
+            surf.blit(self.ornament, (sx, sy))
+            pygame.draw.rect(surf, (70, 46, 84), (sx + 8, sy + 6, 16, 20), border_radius=4)
+            pygame.draw.circle(surf, (145, 92, 190), (sx + 16, sy + 11), 5)
+
+        # Cracks/rubble details.
+        for x, y in self.cracks:
+            px, py = x * T - camx + 7, y * T - camy + 19
+            pygame.draw.line(surf, (42, 39, 48), (px, py), (px + 7, py - 5), 2)
+            pygame.draw.line(surf, (42, 39, 48), (px + 7, py - 5), (px + 11, py + 1), 1)
+
+        # Torch flames and local warm light sources.
+        for tx, ty in self.torches:
+            px, py = tx * T + 16 - camx, ty * T + 10 - camy
+            glow = pygame.Surface((112, 112), pygame.SRCALPHA)
+            for r in range(50, 4, -5):
+                alpha = int(1.7 * max(0, 50 - r))
+                pygame.draw.circle(glow, (230, 105, 35, alpha), (56, 56), r)
+            surf.blit(glow, (px - 56, py - 56), special_flags=pygame.BLEND_RGBA_ADD)
+            flick = int((math.sin(self.t * 9 + tx * 0.7) + 1) * 1.5)
+            pygame.draw.rect(surf, (70, 43, 30), (px - 2, py + 5, 4, 9))
+            pygame.draw.circle(surf, (245, 134, 45), (px, py + flick), 6)
+            pygame.draw.circle(surf, (255, 232, 145), (px, py + flick - 1), 2)
+
+        # Monsters: ambience only, no collisions and no combat.
+        for sheet_name, row, tx, ty, phase in self.monsters:
+            frames = self.monster_frames[(sheet_name, row)]
+            frame = int(self.t * 3.2 + phase * 2) % 3
+            img = frames[frame]
+            bob = int(math.sin(self.t * 2.4 + phase) * 2)
+            px, py = tx * T - camx, ty * T - camy
+            if -40 < px < 680 and -40 < py < 400:
+                surf.blit(shadow, (px + 5, py + 23))
+                surf.blit(img, (px, py + bob - 2))
+
+        # Player always renders above floor decorations.
+        player.draw(surf, (camx, camy), shadow)
+
+        # The dungeon is deliberately very dark: visibility comes from torches + player lantern.
+        darkness = pygame.Surface((640, 360), pygame.SRCALPHA)
+        darkness.fill((0, 0, 5, 226))
+        px, py = int(player.x - camx), int(player.y - camy - 12)
+        pygame.draw.circle(darkness, (0, 0, 0, 0), (px, py), 92)
+        pygame.draw.circle(darkness, (0, 0, 0, 38), (px, py), 132)
+        for tx, ty in self.torches:
+            lx, ly = tx * T + 16 - camx, ty * T + 10 - camy
+            pygame.draw.circle(darkness, (0, 0, 0, 40), (lx, ly), 82)
+            pygame.draw.circle(darkness, (0, 0, 0, 0), (lx, ly), 48)
+        surf.blit(darkness, (0, 0))
+
+        # Subtle vignette on top of the darkness.
+        vignette = pygame.Surface((640, 360), pygame.SRCALPHA)
+        for i in range(24):
+            pygame.draw.rect(vignette, (0, 0, 0, 5), (i, i, 640 - i * 2, 360 - i * 2), 1)
+        surf.blit(vignette, (0, 0))

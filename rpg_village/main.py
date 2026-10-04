@@ -29,6 +29,7 @@ from data import NPCS, PLACES
 from entities import NPC, Animal, Dialogue, Player
 import world as W
 from world import FOOT, HOUSES, T, Baked, World
+from dungeon import Dungeon
 
 VIEW_W, VIEW_H = 640, 360
 
@@ -93,13 +94,9 @@ class Game:
             pass
         self.sfx["jump"].set_volume(0.7) if "jump" in self.sfx else None
         self.music_on = True
-        try:
-            pygame.mixer.music.load(os.path.join(ASSETS, "music", "hearth_and_willow.mp3"))
-            pygame.mixer.music.set_volume(0.45)
-            pygame.mixer.music.play(-1, fade_ms=1500)
-        except Exception as ex:
-            print("Music not available:", ex)
-            self.music_on = False
+        self.current_music = None
+        self.music_volume = 0.45
+        self.play_music("hearth_and_willow.mp3", fade_ms=1500)
         self.font = pygame.font.Font(None, 20)
         self.font_s = pygame.font.Font(None, 16)
         self.font_m = pygame.font.Font(None, 24)
@@ -109,6 +106,9 @@ class Game:
         self.world = World(seed)
         self.baked = Baked(self.world, self.a)
         self.build_props()
+        self.dungeon = Dungeon(self.a["dungeon"])
+        self.scene = "village"
+        self.village_return_pos = None
         self.shadow = pygame.Surface((22, 9), pygame.SRCALPHA)
         pygame.draw.ellipse(self.shadow, (0, 0, 0, 70), (0, 0, 22, 9))
 
@@ -225,6 +225,89 @@ class Game:
             self.cam[0] += (tx - self.cam[0]) * 0.14
             self.cam[1] += (ty - self.cam[1]) * 0.14
 
+    def play_music(self, filename, fade_ms=800):
+        """Switch background music while respecting the B/music toggle."""
+        path = os.path.join(ASSETS, "music", filename)
+        if not os.path.isfile(path):
+            print("Music not available:", path)
+            self.current_music = None
+            return False
+        try:
+            pygame.mixer.music.load(path)
+            self.current_music = filename
+            pygame.mixer.music.set_volume(self.music_volume if self.music_on else 0.0)
+            if self.music_on:
+                pygame.mixer.music.play(-1, fade_ms=fade_ms)
+            else:
+                pygame.mixer.music.pause()
+            return True
+        except Exception as ex:
+            print("Music not available:", ex)
+            self.current_music = None
+            return False
+
+    def enter_dungeon(self):
+        if self.scene == "dungeon":
+            return
+        # Remember a safe spot outside the gate so returning does not immediately re-trigger it.
+        self.village_return_pos = (48 * T + 16, 84 * T + 24)
+        self.scene = "dungeon"
+        self.show_map = False
+        self.dialogue.active = False
+        self.dungeon.set_level(1, spawn="entrance")
+        sx, sy = self.dungeon.player_spawn()
+        self.player.x, self.player.y = sx, sy
+        self.player.dir = "up"
+        self.player.z = self.player.vz = 0.0
+        self.dungeon.cam = [max(0, self.player.x - VIEW_W / 2), max(0, self.player.y - VIEW_H / 2)]
+        self.banner_text = "The Hollow Below — Floor 1"
+        self.banner_t = 3.2
+        self.play_music("dark.mp3", fade_ms=1200)
+
+    def exit_dungeon(self):
+        if self.scene != "dungeon":
+            return
+        self.scene = "village"
+        self.dungeon.set_level(1, spawn="entrance")
+        if self.village_return_pos:
+            # Put the hero just outside the entrance, rather than inside the trigger again.
+            self.player.x, self.player.y = self.village_return_pos
+        else:
+            self.player.x, self.player.y = 48 * T + 16, 88 * T + 24
+        self.player.dir = "down"
+        self.player.z = self.player.vz = 0.0
+        self.center_camera(True)
+        self.banner_text = "Hearthmoor Village"
+        self.banner_t = 3.2
+        self.play_music("hearth_and_willow.mp3", fade_ms=1200)
+
+    def change_dungeon_level(self, direction):
+        if self.scene != "dungeon":
+            return
+        old = self.dungeon.level
+        if direction == "down" and old < self.dungeon.max_level:
+            new = old + 1
+            self.dungeon.set_level(new, spawn="down")
+            self.player.x, self.player.y = self.dungeon.player_spawn()
+            self.player.dir = "up"
+            self.player.z = self.player.vz = 0.0
+            self.banner_text = f"The Hollow Below — Floor {new}"
+            self.banner_t = 2.8
+            self.toast(f"Descended to floor {new}/5", 2.2)
+        elif direction == "up":
+            if old == 1:
+                self.exit_dungeon()
+                return
+            new = old - 1
+            self.dungeon.set_level(new, spawn="up")
+            self.player.x, self.player.y = self.dungeon.player_spawn()
+            self.player.dir = "down"
+            self.player.z = self.player.vz = 0.0
+            self.banner_text = f"The Hollow Below — Floor {new}"
+            self.banner_t = 2.8
+            self.toast(f"Returned to floor {new}/5", 2.2)
+        self.dungeon.cam = [max(0, self.player.x - VIEW_W / 2), max(0, self.player.y - VIEW_H / 2)]
+
     def play(self, name):
         s = self.sfx.get(name)
         if s:
@@ -237,6 +320,13 @@ class Game:
         return sum(1 for n in self.npcs if n.talk_count > 0)
 
     def update_place(self, first=False):
+        if self.scene == "dungeon":
+            name = f"The Hollow Below — Floor {self.dungeon.level}/5"
+            if name != self.place_name:
+                self.place_name = name
+                self.banner_text = name
+                self.banner_t = 3.2
+            return
         tx, ty = self.player.x / T, self.player.y / T
         name = None
         for nm, (x0, y0, x1, y1) in PLACES:
@@ -252,6 +342,12 @@ class Game:
             self.banner_t = 3.2
 
     def find_target(self):
+        if self.scene == "dungeon":
+            transition = self.dungeon.next_transition(self.player)
+            if transition:
+                pos = self.dungeon.world.up if transition == "up" else self.dungeon.world.down
+                return ("dungeon_transition", (transition, pos))
+            return None
         px, py = self.player.x, self.player.y
         best, bd = None, 1e9
         for n in self.npcs:
@@ -280,6 +376,12 @@ class Game:
             return
         kind, obj = tgt
         self.play("talk")
+        if kind == "dungeon_transition":
+            self.change_dungeon_level(obj[0])
+            return
+        if kind == "obj" and obj.get("name") == "Dungeon Entrance":
+            self.enter_dungeon()
+            return
         if kind == "npc":
             obj.talking = True
             obj.face(self.player.x, self.player.y)
@@ -325,9 +427,17 @@ class Game:
             return
         talking = self.dialogue.active
         if self.music_on:
-            want = 0.22 if talking else 0.45
+            want = 0.22 if talking else (0.32 if self.scene == "dungeon" else 0.45)
             cur = pygame.mixer.music.get_volume()
             pygame.mixer.music.set_volume(cur + max(-0.01, min(0.01, want - cur)))
+        if self.scene == "dungeon":
+            self.player.update(dt, keys, self.dungeon.world, [])
+            self.target = self.find_target()
+            self.dungeon.update(dt, self.player)
+            self.update_place()
+            self.banner_t = max(0, self.banner_t - dt)
+            self.help_t = max(0, self.help_t - dt)
+            return
         self.dialogue.update(dt, self.sfx.get("blip"))
         npc_rects = [n.foot for n in self.npcs]
         if not talking:
@@ -371,8 +481,38 @@ class Game:
 
     # -------------------------------------------------------------- draw
     def draw_world(self, v):
+        if self.scene == "dungeon":
+            self.dungeon.draw(v, self.player, self.shadow)
+            if self.target and not self.dialogue.active:
+                bob = math.sin(self.t * 5) * 2
+                direction, pos = self.target[1]
+                if direction == "down":
+                    label = "Descend"
+                elif self.dungeon.level == 1:
+                    label = "Return to Hearthmoor"
+                else:
+                    label = "Go Up"
+                lw = self.font_s.size(label)[0]
+                pad = pygame.Surface((lw + 10, 14), pygame.SRCALPHA)
+                pygame.draw.rect(pad, (16, 13, 22, 205), pad.get_rect(), border_radius=5)
+                pad.blit(self.font_s.render(label, True, (235, 225, 245)), (5, 2))
+                tx = pos[0] * T + 16 - self.dungeon.cam[0]
+                ty = pos[1] * T - self.dungeon.cam[1] - 12
+                v.blit(pad, (tx - pad.get_width() // 2, ty - 18 + bob))
+                v.blit(self.a["ui"]["key_e"], (tx - 10, ty + bob))
+            return
         cam = (int(self.cam[0]), int(self.cam[1]))
         v.blit(self.baked.ground, (0, 0), (cam[0], cam[1], VIEW_W, VIEW_H))
+        # Southern dungeon entrance: a dark stone arch embedded in the road.
+        ex = pygame.Rect(46 * T - cam[0], 86 * T - cam[1], 5 * T, 3 * T)
+        if ex.right >= 0 and ex.left < VIEW_W and ex.bottom >= 0 and ex.top < VIEW_H:
+            pygame.draw.ellipse(v, (12, 10, 15), ex.inflate(-18, -4))
+            pygame.draw.rect(v, (62, 60, 68), (ex.x + 18, ex.y + 8, ex.w - 36, ex.h - 8), border_radius=16)
+            pygame.draw.rect(v, (25, 22, 30), (ex.x + 25, ex.y + 18, ex.w - 50, ex.h - 12), border_radius=12)
+            pygame.draw.line(v, (103, 98, 112), (ex.x + 22, ex.y + 15), (ex.x + 40, ex.y + 5), 3)
+            pygame.draw.line(v, (103, 98, 112), (ex.right - 22, ex.y + 15), (ex.right - 40, ex.y + 5), 3)
+            for gx in (ex.x + 16, ex.right - 16):
+                pygame.draw.circle(v, (86, 82, 94), (gx, ex.y + 23), 4)
         # animated water + shore foam
         f = int(self.t * 3) % 4
         tw = self.a["tiles"]
@@ -487,6 +627,19 @@ class Game:
         v.blit(s, rect.topleft)
 
     def draw_ui(self, v):
+        if self.scene == "dungeon":
+            self.panel(v, pygame.Rect(6, 6, 210, 46), 220)
+            self.text_shadow(v, self.font_m, "THE HOLLOW BELOW", (14, 10), (220, 204, 238), (25, 18, 30))
+            self.text_shadow(v, self.font_s, f"Floor {self.dungeon.level}/5  •  E: stairs", (14, 30), (190, 180, 205))
+            if self.banner_t > 0:
+                txt = self.font_m.render(self.banner_text, True, (235, 224, 246))
+                w = txt.get_width() + 36
+                s = pygame.Surface((w, 30), pygame.SRCALPHA)
+                pygame.draw.rect(s, (25, 18, 32, 195), s.get_rect(), border_radius=15)
+                pygame.draw.rect(s, (148, 122, 168, 230), s.get_rect(), 1, border_radius=15)
+                s.blit(txt, (18, 8))
+                v.blit(s, ((VIEW_W - w) // 2, 12))
+            return
         # clock / progress
         hh, mm = int(self.time), int((self.time % 1) * 60) // 5 * 5
         self.panel(v, pygame.Rect(6, 6, 118, 36))
@@ -617,6 +770,8 @@ class Game:
                     return False
                 return True
             if k == pygame.K_ESCAPE:
+                if self.scene == "dungeon":
+                    return True
                 if self.show_map:
                     self.show_map = False
                 elif self.dialogue.active:
@@ -640,10 +795,11 @@ class Game:
                 elif self.player.jump():
                     self.play("jump")
             elif k == pygame.K_m:
-                self.show_map = not self.show_map
+                if self.scene == "village":
+                    self.show_map = not self.show_map
             elif k == pygame.K_h:
                 self.help_t = 0 if self.help_t > 0 else 12
-            elif k == pygame.K_n and not self.dialogue.active:
+            elif k == pygame.K_n and not self.dialogue.active and self.scene == "village":
                 self.time = (self.time + 1) % 24
                 self.toast("Time passes...", 1.5)
             elif k in (pygame.K_e, pygame.K_RETURN, pygame.K_KP_ENTER) and not self.show_map:
