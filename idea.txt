@@ -1,1 +1,4 @@
 1) pause and resume
+2) sword sound 
+3) health 
+4) chest 

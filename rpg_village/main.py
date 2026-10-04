@@ -7,6 +7,11 @@ Controls
   E / ENTER          talk / interact / continue dialogue
   M  world map       N  skip an hour of time      H  help
   F11  fullscreen    ESC  pause
+
+In the dungeon (battle):
+  LEFT MOUSE (hold)    attack with the equipped weapon, aimed at the cursor
+  RIGHT MOUSE / SCROLL swap between sword and magic
+  SPACE                dodge roll (invincible while rolling)
 """
 import argparse
 import math
@@ -30,6 +35,7 @@ from entities import NPC, Animal, Dialogue, Player
 import world as W
 from world import FOOT, HOUSES, T, Baked, World
 from dungeon import Dungeon
+from combat import Combat
 
 VIEW_W, VIEW_H = 640, 360
 
@@ -115,6 +121,9 @@ class Game:
         # actors
         hx, hy = self.world.nearest_walkable(48, 51)
         self.player = Player(hx * T + 16, hy * T + 28, self.a["characters"]["hero"])
+        self.combat = Combat(self.dungeon, self.player)
+        self.combat.toast = self.toast
+        self.mouse_hidden = False
         self.npcs = []
         for d in NPCS:
             self.npcs.append(NPC(d, self.a["characters"][d["id"]], self.a["portraits"][d["id"]], self.world))
@@ -308,6 +317,12 @@ class Game:
             self.toast(f"Returned to floor {new}/5", 2.2)
         self.dungeon.cam = [max(0, self.player.x - VIEW_W / 2), max(0, self.player.y - VIEW_H / 2)]
 
+    def mouse_view(self):
+        """Mouse position in the 640x360 game view (also correct when the window is scaled)."""
+        mx, my = pygame.mouse.get_pos()
+        sw, sh = self.screen.get_size()
+        return mx * VIEW_W / sw, my * VIEW_H / sh
+
     def play(self, name):
         s = self.sfx.get(name)
         if s:
@@ -416,6 +431,10 @@ class Game:
     def update(self, dt):
         self.t += dt
         keys = pygame.key.get_pressed()
+        hide = self.scene == "dungeon" and self.state == "play" and not self.paused
+        if hide != self.mouse_hidden:                   # the dungeon draws its own crosshair
+            self.mouse_hidden = hide
+            pygame.mouse.set_visible(not hide)
         if self.state == "title":
             self.cam = [self.cam[0], self.cam[1]]
             for n in self.npcs:
@@ -431,12 +450,18 @@ class Game:
             cur = pygame.mixer.music.get_volume()
             pygame.mixer.music.set_volume(cur + max(-0.01, min(0.01, want - cur)))
         if self.scene == "dungeon":
-            self.player.update(dt, keys, self.dungeon.world, [])
+            mx, my = self.mouse_view()
+            cam = self.dungeon.cam
+            aim = (mx + int(cam[0]), my + int(cam[1]))            # cursor in dungeon world coordinates
+            self.combat.update(dt, keys, aim, pygame.mouse.get_pressed()[0])
             self.target = self.find_target()
             self.dungeon.update(dt, self.player)
             self.update_place()
             self.banner_t = max(0, self.banner_t - dt)
             self.help_t = max(0, self.help_t - dt)
+            for t in self.toasts:
+                t[1] -= dt
+            self.toasts = [t for t in self.toasts if t[1] > 0]
             return
         self.dialogue.update(dt, self.sfx.get("blip"))
         npc_rects = [n.foot for n in self.npcs]
@@ -482,7 +507,8 @@ class Game:
     # -------------------------------------------------------------- draw
     def draw_world(self, v):
         if self.scene == "dungeon":
-            self.dungeon.draw(v, self.player, self.shadow)
+            self.dungeon.draw(v, self.player, self.shadow, self.combat)
+            self.combat.draw_overlay(v, self.font_s)
             if self.target and not self.dialogue.active:
                 bob = math.sin(self.t * 5) * 2
                 direction, pos = self.target[1]
@@ -626,6 +652,17 @@ class Game:
         pygame.draw.rect(s, (214, 178, 120, 220), s.get_rect(), 1, border_radius=8)
         v.blit(s, rect.topleft)
 
+    def draw_toasts(self, v):
+        for i, (t, d) in enumerate(self.toasts[-3:]):
+            img = self.font.render(t, True, (255, 246, 226))
+            w = img.get_width() + 20
+            s = pygame.Surface((w, 24), pygame.SRCALPHA)
+            pygame.draw.rect(s, (60, 100, 70, 200), s.get_rect(), border_radius=8)
+            pygame.draw.rect(s, (190, 230, 180, 230), s.get_rect(), 1, border_radius=8)
+            s.blit(img, (10, 5))
+            s.set_alpha(int(255 * min(1, d / 0.6)))
+            v.blit(s, ((VIEW_W - w) // 2, 52 + i * 28))
+
     def draw_ui(self, v):
         if self.scene == "dungeon":
             self.panel(v, pygame.Rect(6, 6, 210, 46), 220)
@@ -639,6 +676,8 @@ class Game:
                 pygame.draw.rect(s, (148, 122, 168, 230), s.get_rect(), 1, border_radius=15)
                 s.blit(txt, (18, 8))
                 v.blit(s, ((VIEW_W - w) // 2, 12))
+            self.draw_toasts(v)
+            self.combat.draw_hud(v, self.font, self.font_s, self.mouse_view())
             return
         # clock / progress
         hh, mm = int(self.time), int((self.time % 1) * 60) // 5 * 5
@@ -667,16 +706,7 @@ class Game:
             s.blit(txt, (18, 8))
             s.set_alpha(int(255 * max(0, min(1, a))))
             v.blit(s, ((VIEW_W - w) // 2, 12))
-        # toasts
-        for i, (t, d) in enumerate(self.toasts[-3:]):
-            img = self.font.render(t, True, (255, 246, 226))
-            w = img.get_width() + 20
-            s = pygame.Surface((w, 24), pygame.SRCALPHA)
-            pygame.draw.rect(s, (60, 100, 70, 200), s.get_rect(), border_radius=8)
-            pygame.draw.rect(s, (190, 230, 180, 230), s.get_rect(), 1, border_radius=8)
-            s.blit(img, (10, 5))
-            s.set_alpha(int(255 * min(1, d / 0.6)))
-            v.blit(s, ((VIEW_W - w) // 2, 52 + i * 28))
+        self.draw_toasts(v)
         self.dialogue.draw(v)
         if self.help_t > 0 and not self.dialogue.active:
             a = min(1.0, self.help_t / 2)
@@ -718,11 +748,13 @@ class Game:
         bob = math.sin(self.t * 1.6) * 3
         self.text_shadow(v, self.font_b, "HEARTHMOOR", (VIEW_W // 2, 62 + bob), (255, 226, 150), (70, 36, 24), True)
         self.text_shadow(v, self.font_m, "A tiny open-world village adventure", (VIEW_W // 2, 128), (255, 246, 226), (40, 24, 20), True)
-        self.panel(v, pygame.Rect(VIEW_W // 2 - 170, 176, 340, 96), 190)
+        self.panel(v, pygame.Rect(VIEW_W // 2 - 170, 172, 340, 120), 190)
         lines = ["WASD / Arrows .... move       SHIFT .... run", "SPACE .... jump        E / Enter .... talk",
-                 "M .... map    N .... skip time    B .... music", "F11 .... fullscreen       ESC .... pause"]
+                 "M .... map    N .... skip time    B .... music", "F11 .... fullscreen       ESC .... pause",
+                 "DUNGEON: Left click attack   Right click / scroll swap",
+                 "         SPACE dodge roll"]
         for i, l in enumerate(lines):
-            self.text_shadow(v, self.font, l, (VIEW_W // 2, 186 + i * 20), center=True)
+            self.text_shadow(v, self.font, l, (VIEW_W // 2, 180 + i * 19), center=True)
         if int(self.t * 2) % 2 == 0:
             self.text_shadow(v, self.font_m, "Press ENTER to begin", (VIEW_W // 2, 300), (255, 255, 255), (40, 24, 20), True)
 
@@ -749,6 +781,14 @@ class Game:
     def handle(self, e):
         if e.type == pygame.QUIT:
             return False
+        if e.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEWHEEL):
+            # attack is read as "left button held" in update(); right click / scroll swaps weapon
+            if self.state == "play" and not self.paused and self.scene == "dungeon":
+                if e.type == pygame.MOUSEBUTTONDOWN and e.button == 3:
+                    self.combat.swap_weapon()
+                elif e.type == pygame.MOUSEWHEEL and e.y:
+                    self.combat.swap_weapon(scroll=True)
+            return True
         if e.type == pygame.KEYDOWN:
             k = e.key
             if k == pygame.K_F11:
@@ -792,6 +832,8 @@ class Game:
             elif k == pygame.K_SPACE and not self.show_map:
                 if self.dialogue.active:
                     self.dialogue.advance()
+                elif self.scene == "dungeon":
+                    self.combat.dodge(pygame.key.get_pressed())
                 elif self.player.jump():
                     self.play("jump")
             elif k == pygame.K_m:

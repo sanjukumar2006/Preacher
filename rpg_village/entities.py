@@ -52,6 +52,8 @@ class Player(Mover):
         self.walk = 92.0
         self.run = 150.0
         self.running = False
+        self.speed_mul = 1.0      # combat: slows the hero while swinging a weapon
+        self.face_lock = None     # combat: force the facing direction (towards the cursor while attacking)
         self.footstep_t = 0.0
         self.z = 0.0          # height above ground in pixels (visual only)
         self.vz = 0.0
@@ -79,7 +81,7 @@ class Player(Mover):
         self.running = bool(keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT])
         self.moving = False
         if dx or dy:
-            sp = self.run if self.running else self.walk
+            sp = (self.run if self.running else self.walk) * self.speed_mul
             n = math.hypot(dx, dy)
             vx, vy = dx / n * sp * dt, dy / n * sp * dt
             if abs(dx) >= abs(dy) and dx:
@@ -87,6 +89,8 @@ class Player(Mover):
             elif dy:
                 self.dir = "down" if dy > 0 else "up"
             self.moving = self.step(vx, vy, world, others)
+        if self.face_lock:
+            self.dir = self.face_lock
         if self.moving:
             self.anim += dt * (11 if self.running else 8)
         else:

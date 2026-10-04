@@ -1,8 +1,8 @@
 """Hand-crafted five-level dungeon for Hearthmoor.
 
-The dungeon is exploration-only for now: monsters are visual/animated and do not
-start combat. Each floor has a deliberate room/corridor layout, a staircase to
-the next floor, and a staircase back up. The village entrance is on level 1.
+Each floor has a deliberate room/corridor layout, a staircase to the next floor, and a
+staircase back up. The village entrance is on level 1. Monsters, weapons and all battle
+logic live in combat.py; this file only draws the floor and tells combat when a new floor loads.
 """
 import math
 import pygame
@@ -189,8 +189,8 @@ class Dungeon:
         self.world = DungeonWorld(1)
         self.t = 0.0
         self.cam = [0.0, 0.0]
+        self.on_level = None          # combat.py hooks in here to (re)spawn monsters when a floor loads
         self._load_tiles()
-        self._load_monsters()
         self.set_level(1, spawn="entrance")
 
     def _load_tiles(self):
@@ -207,38 +207,14 @@ class Dungeon:
         self.ornament = a5.subsurface((4 * 32, 14 * 32, 32, 32)).copy()
         self.stairs = a5.subsurface((4 * 32, 15 * 32, 32, 32)).copy()
 
-    def _load_monsters(self):
-        self.monster_frames = {}
-        for sheet_name in ("Monster1", "Monster2"):
-            sheet = self.assets[sheet_name]
-            for row in range(8):
-                self.monster_frames[(sheet_name, row)] = [
-                    sheet.subsurface((col * 32, row * 32, 32, 32)).copy()
-                    for col in range(3)
-                ]
-
-    def _monster_layout(self, level):
-        # Hand-placed ambience. No AI and no combat yet.
-        layouts = {
-            1: [("Monster1", 1, 5, 11, 0), ("Monster1", 2, 28, 11, 1), ("Monster2", 1, 6, 18, 2), ("Monster2", 0, 29, 18, 3)],
-            2: [("Monster2", 1, 7, 6, 0), ("Monster1", 0, 27, 6, 1), ("Monster2", 2, 7, 17, 2), ("Monster1", 2, 28, 17, 3)],
-            3: [("Monster1", 2, 6, 10, 0), ("Monster2", 2, 28, 10, 1), ("Monster1", 0, 8, 19, 2), ("Monster2", 0, 27, 19, 3)],
-            4: [("Monster2", 0, 7, 6, 0), ("Monster1", 1, 28, 6, 1), ("Monster2", 1, 7, 18, 2), ("Monster1", 2, 28, 18, 3)],
-            5: [("Monster1", 0, 7, 12, 0), ("Monster2", 2, 27, 12, 1), ("Monster1", 1, 9, 17, 2), ("Monster2", 0, 25, 17, 3)],
-        }
-        out = []
-        for sheet, row, x, y, phase in layouts[level]:
-            if self.world.walkable_tile(x, y):
-                out.append((sheet, row, x, y, phase * 0.7))
-        return out
-
     def set_level(self, level, spawn="entrance"):
         self.level = max(1, min(self.max_level, level))
         self.world = DungeonWorld(self.level)
-        self.monsters = self._monster_layout(self.level)
         self.torches = self._make_torches()
         self.cracks = self._make_details()
         self._set_spawn(spawn)
+        if self.on_level:
+            self.on_level()
 
     def _set_spawn(self, spawn):
         if spawn == "down" and self.world.up:
@@ -297,8 +273,11 @@ class Dungeon:
     def draw_tile(self, surf, img, sx, sy):
         surf.blit(img, (sx, sy))
 
-    def draw(self, surf, player, shadow):
+    def draw(self, surf, player, shadow, combat=None):
         camx, camy = int(self.cam[0]), int(self.cam[1])
+        if combat:
+            ox, oy = combat.shake_offset()
+            camx, camy = camx + ox, camy + oy
         surf.fill((4, 4, 7))
 
         # Full, coherent stone floor/wall layout.
@@ -373,19 +352,11 @@ class Dungeon:
             pygame.draw.circle(surf, (245, 134, 45), (px, py + flick), 6)
             pygame.draw.circle(surf, (255, 232, 145), (px, py + flick - 1), 2)
 
-        # Monsters: ambience only, no collisions and no combat.
-        for sheet_name, row, tx, ty, phase in self.monsters:
-            frames = self.monster_frames[(sheet_name, row)]
-            frame = int(self.t * 3.2 + phase * 2) % 3
-            img = frames[frame]
-            bob = int(math.sin(self.t * 2.4 + phase) * 2)
-            px, py = tx * T - camx, ty * T - camy
-            if -40 < px < 680 and -40 < py < 400:
-                surf.blit(shadow, (px + 5, py + 23))
-                surf.blit(img, (px, py + bob - 2))
-
-        # Player always renders above floor decorations.
-        player.draw(surf, (camx, camy), shadow)
+        # Monsters and the player (depth-sorted together by the combat system).
+        if combat:
+            combat.draw_entities(surf, camx, camy, shadow)
+        else:
+            player.draw(surf, (camx, camy), shadow)
 
         # The dungeon is deliberately very dark: visibility comes from torches + player lantern.
         darkness = pygame.Surface((640, 360), pygame.SRCALPHA)
@@ -397,7 +368,11 @@ class Dungeon:
             lx, ly = tx * T + 16 - camx, ty * T + 10 - camy
             pygame.draw.circle(darkness, (0, 0, 0, 40), (lx, ly), 82)
             pygame.draw.circle(darkness, (0, 0, 0, 0), (lx, ly), 48)
+        if combat:
+            combat.cut_light(darkness, camx, camy)
         surf.blit(darkness, (0, 0))
+        if combat:
+            combat.draw_fx(surf, camx, camy)      # glowing spells / telegraphs sit above the darkness
 
         # Subtle vignette on top of the darkness.
         vignette = pygame.Surface((640, 360), pygame.SRCALPHA)
