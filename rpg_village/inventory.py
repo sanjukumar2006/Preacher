@@ -144,6 +144,19 @@ def draw_inventory(g, v):
             hk = ITEMS[s[0]].get("key")
         if hk:
             v.blit(g.font_s.render(hk, True, (255, 220, 140)), (r.x + 4, r.y + 3))
+    # ---- quest box (under the grid)
+    qt = g.quest.tracker()
+    qy = GRID_Y + Inventory.ROWS * (SLOT + GAP) + 6
+    qbox = pygame.Rect(GRID_X, qy, Inventory.COLS * (SLOT + GAP) - GAP, 68)
+    pygame.draw.rect(v, (30, 22, 20), qbox, border_radius=6)
+    pygame.draw.rect(v, (96, 76, 64), qbox, 1, border_radius=6)
+    v.blit(g.font_s.render("QUEST", True, (255, 226, 150)), (qbox.x + 8, qbox.y + 6))
+    if qt:
+        v.blit(g.font_s.render(qt[0], True, (255, 246, 226)), (qbox.x + 8, qbox.y + 20))
+        for j, ln in enumerate(_wrap(g.font_s, qt[1], qbox.w - 16)[:4]):
+            v.blit(g.font_s.render(ln, True, (214, 206, 194)), (qbox.x + 8, qbox.y + 34 + j * 11))
+    else:
+        pass
     # ---- details
     dx = PANEL.x + 244
     g.text_shadow(v, g.font, "Selected", (dx, PANEL.y + 16), (214, 190, 150))

@@ -115,3 +115,10 @@ for a real fight.
 - **Goddess statue**: a glowing statue stands on its own little flagstone plaza just west of the dungeon gate courtyard
   (light-blue mark on the minimap and map). Stand in front of it and press **E** to fully restore HP and MP - as often as you like.
   Art: `assets/objects/goddess.png` (regenerate with `python tools/make_goddess.py`), placed in `World.build_gate`.
+
+## Main quest - The Warden of the Hollow
+- Talk to **Elder Maren** in the village plaza: after her usual greeting she asks you to descend into the Hollow Below and defeat **Grimhorn**.
+  The quest tracker appears at the top-left (village and dungeon) and in a box on the inventory screen. Talking to her again repeats the hint.
+- When Grimhorn falls the tracker says "return to Elder Maren". Report back for the reward: **+20 max HP, +20 max MP, 3 Health + 3 Mana Potions**
+  (and a full heal). Text and rewards are edited in `quest.py`.
+- If you beat Grimhorn before ever accepting the quest, Elder Maren still thanks you and pays the reward.

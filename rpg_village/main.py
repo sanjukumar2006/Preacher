@@ -41,6 +41,7 @@ import world as W
 from world import FOOT, HOUSES, T, Baked, World
 from dungeon import Dungeon
 from combat import Combat
+import quest as Q
 from inventory import QUICK_ITEMS, draw_inventory, inv_click, inv_key
 import gate
 from menus import (MenuList, Tutorial, draw_ask, draw_controls, draw_pause, draw_title_screen, make_motes)
@@ -169,6 +170,7 @@ class Game:
         self.t = 0.0
         self.show_map = False
         self.show_inv = False                       # inventory screen (key I)
+        self.quest = Q.Quest()
         self.heal_t = 0.0                           # goddess blessing animation timer
         self.holy = [radial(100, (int(70 * k), int(135 * k), int(210 * k)), 1.5) for k in (0.55, 0.75, 1.0)]
         self.paused = False
@@ -272,7 +274,7 @@ class Game:
             self.menu_ask = MenuList([("yes", "Yes, show me the basics"), ("no", "No thanks, let's go")],
                                      top=156, width=320)
         if self.menu_pause is None:
-            self.menu_pause = MenuList([("resume", "Resume"), ("controls", "Controls"), ("music", self.music_label),
+            self.menu_pause = MenuList([("resume", "Resume"), ("inventory", "Inventory"), ("controls", "Controls"), ("music", self.music_label),
                                         ("tutorial", "Replay Tutorial"), ("title", "Main Menu"),
                                         ("quit", "Quit Game")], top=112, gap=29, width=230)
 
@@ -316,6 +318,7 @@ class Game:
         self.center_camera(True)
         self.banner_text = self.place_name
         self.banner_t = 3.2
+        self.toast("Talk to Elder Maren in the village plaza (press E near him)", 8.0)
         self.build_menus()
         if tutorial:
             self.tut.start()
@@ -346,6 +349,9 @@ class Game:
             self.begin_game(key == "yes")
         elif key == "resume":
             self.resume()
+        elif key == "inventory":
+            self.resume()
+            self.show_inv = True
         elif key == "tutorial":
             if self.scene != "village":
                 self.toast("Return to the village to replay the tutorial.", 3.0)
@@ -632,19 +638,26 @@ class Game:
             obj.talking = True
             obj.face(self.player.x, self.player.y)
             self.player.dir = {"left": "right", "right": "left", "up": "down", "down": "up"}[obj.dir]
-            others_met = all(n.talk_count > 0 for n in self.npcs if n.id != "elder")
+            others_met = False
             first = obj.talk_count == 0
-            lines = obj.lines(others_met)
+            after = None
+            if obj.id == "elder" and self.combat.boss_defeated and self.quest.state != "done":
+                lines = list(Q.THANKS)                     # Grimhorn is dead: report back and get the reward
+                obj.talk_count += 1 if first else 0
+                after = self.finish_quest
+            elif obj.id == "elder" and self.quest.state == "active":
+                lines = list(Q.REMINDER)
+            elif obj.id == "elder" and self.quest.state == "unknown":
+                lines = obj.lines(others_met) + Q.OFFER     # first request: go and defeat the boss
+                after = self.start_quest
+            else:
+                lines = obj.lines(others_met)
 
-            def end(n=obj, first=first):
+            def end(n=obj, first=first, after=after):
                 n.talking = False
                 self.play("bye")
-                if first:
-                    c = self.met_count()
-                    if c == len(self.npcs):
-                        self.toast("You've met every villager! Visit Elder Maren once more.", 5)
-                    else:
-                        self.toast(f"Met {n.name}  ({c}/{len(self.npcs)} villagers)")
+                if after:
+                    after()
             self.dialogue.start(obj.name, obj.role, lines, obj.portrait, end)
         elif kind == "animal":
             if obj.kind == "chicken":
@@ -657,6 +670,47 @@ class Game:
             self.dialogue.start("", "", [line], None)
         else:
             self.dialogue.start(obj["name"], "", obj["text"], None)
+
+    def start_quest(self):
+        self.quest.state = "active"
+        self.quest.show_hud()
+        self.toast("New quest: " + Q.TITLE + "  (see Inventory: I)", 5.0)
+
+    def finish_quest(self):
+        c = self.combat
+        self.quest.state = "done"
+        self.quest.show_hud()
+        c.max_hp += Q.REWARD["max_hp"]
+        c.max_mp += Q.REWARD["max_mp"]
+        c.hp, c.mp = c.max_hp, c.max_mp
+        c.inv.add("health_potion", Q.REWARD["health_potion"])
+        c.inv.add("mana_potion", Q.REWARD["mana_potion"])
+        self.play("talk")
+        self.toast("Quest complete: " + Q.TITLE, 6.0)
+
+    def draw_quest(self, v, x, y):
+        """Quest tracker panel (top-left, under the other panels)."""
+        t = self.quest.hud_tracker()
+        if not t:
+            return
+        title, obj = t
+        words, lines, cur = obj.split(), [], ""
+        for w in words:
+            tt = (cur + " " + w).strip()
+            if self.font_s.size(tt)[0] <= 186:
+                cur = tt
+            else:
+                lines.append(cur)
+                cur = w
+        lines.append(cur)
+        done = self.quest.state == "done"
+        ready = self.quest.state == "ready"
+        h = 22 + len(lines) * 12
+        self.panel(v, pygame.Rect(x, y, 204, h), 200)
+        col = (170, 235, 170) if (done or ready) else (255, 226, 150)
+        self.text_shadow(v, self.font_s, "QUEST: " + title, (x + 8, y + 5), col)
+        for i, ln in enumerate(lines):
+            self.text_shadow(v, self.font_s, ln, (x + 8, y + 19 + i * 12), (236, 228, 214))
 
     def pray(self):
         """Goddess statue by the dungeon gate: refills HP and MP (as often as you like)."""
@@ -702,6 +756,7 @@ class Game:
         if self.paused or self.show_map or self.show_inv:
             return
         self.heal_t = max(0.0, self.heal_t - dt)
+        self.quest.update(self, dt)
         talking = self.dialogue.active
         if self.music_on:
             want = 0.22 if talking else ((0.44 if self.combat.boss_lock else 0.32) if self.scene == "dungeon" else 0.45)
@@ -995,6 +1050,7 @@ class Game:
                 pygame.draw.rect(s, (148, 122, 168, 230), s.get_rect(), 1, border_radius=15)
                 s.blit(txt, (18, 8))
                 v.blit(s, ((VIEW_W - w) // 2, 12))
+            self.draw_quest(v, 6, 56)
             self.draw_toasts(v)
             self.combat.draw_hud(v, self.font, self.font_s, self.mouse_view())
             self.dialogue.draw(v)
@@ -1011,7 +1067,6 @@ class Game:
         self.text_shadow(v, self.font, f"{hh:02d}:{mm:02d}", (14, 10))
         icon = "Day" if 6.3 < self.time < 19 else "Night"
         self.text_shadow(v, self.font_s, icon, (66, 13), (200, 190, 160))
-        self.text_shadow(v, self.font_s, f"Villagers met {self.met_count()}/{len(self.npcs)}", (14, 26), (255, 226, 150))
         # hero vitals (HP / MP)
         c = self.combat
         self.panel(v, pygame.Rect(6, 46, 118, 36))
@@ -1025,6 +1080,7 @@ class Game:
             pygame.draw.rect(v, (235, 225, 215), bar, 1, border_radius=3)
             t = self.font_s.render(f"{cur}/{mx}", True, (255, 255, 255))
             v.blit(t, (bar.centerx - t.get_width() // 2, bar.y - 1))
+        self.draw_quest(v, 6, 86)
         # minimap
         mm_rect = pygame.Rect(VIEW_W - 108, 6, 102, 102)
         self.panel(v, mm_rect, 200)
