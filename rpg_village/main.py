@@ -41,6 +41,7 @@ import world as W
 from world import FOOT, HOUSES, T, Baked, World
 from dungeon import Dungeon
 from combat import Combat
+from inventory import QUICK_ITEMS, draw_inventory, inv_click, inv_key
 import gate
 from menus import (MenuList, Tutorial, draw_ask, draw_controls, draw_pause, draw_title_screen, make_motes)
 
@@ -167,6 +168,9 @@ class Game:
         self.build_menus()
         self.t = 0.0
         self.show_map = False
+        self.show_inv = False                       # inventory screen (key I)
+        self.heal_t = 0.0                           # goddess blessing animation timer
+        self.holy = [radial(100, (int(70 * k), int(135 * k), int(210 * k)), 1.5) for k in (0.55, 0.75, 1.0)]
         self.paused = False
         self.help_t = 14.0
         self.toasts = []
@@ -243,6 +247,8 @@ class Game:
             else:
                 continue
             m.fill(c, (p["tx"], p["ty"], fw, fh if not k.startswith("house") else 4))
+        gx, gy = self.world.goddess
+        m.fill((150, 225, 255), (gx - 1, gy - 1, 4, 3))           # goddess statue
         m.fill((74, 66, 96), (46, 86, 6, 5))                     # the Hollow Gate
         m.fill((150, 80, 230), (47, 87, 4, 3))
         self.mini = m
@@ -428,6 +434,7 @@ class Game:
         # Remember a safe spot outside the gate so returning does not immediately re-trigger it.
         self.village_return_pos = (48 * T + 16, 84 * T + 24)
         self.scene = "dungeon"
+        self.combat.dungeon_active = True
         self.show_map = False
         self.dialogue.active = False
         self.dungeon.set_level(1, spawn="entrance")
@@ -447,6 +454,7 @@ class Game:
         if self.scene != "dungeon":
             return
         self.scene = "village"
+        self.combat.dungeon_active = False
         self.dungeon.set_level(1, spawn="entrance")
         if self.village_return_pos:
             # Put the hero just outside the entrance, rather than inside the trigger again.
@@ -617,6 +625,9 @@ class Game:
         if kind == "obj" and obj.get("id") == "dungeon":
             self.enter_dungeon()
             return
+        if kind == "obj" and obj.get("id") == "goddess":
+            self.pray()
+            return
         if kind == "npc":
             obj.talking = True
             obj.face(self.player.x, self.player.y)
@@ -647,11 +658,26 @@ class Game:
         else:
             self.dialogue.start(obj["name"], "", obj["text"], None)
 
+    def pray(self):
+        """Goddess statue by the dungeon gate: refills HP and MP (as often as you like)."""
+        c = self.combat
+        if c.restore_all():
+            self.heal_t = 2.2
+            lines = ["You kneel before the goddess and close your eyes.",
+                     "Warm light pours from the orb in her hands. Your wounds close and your mind grows clear.",
+                     "HP and MP fully restored."]
+            self.toast("The goddess restores your HP and MP", 3.0)
+        else:
+            self.heal_t = 1.0
+            lines = ["The goddess smiles down at you. You are already in perfect health.",
+                     "Her blessing will be waiting whenever you return from the dark."]
+        self.dialogue.start("Goddess Statue", "", lines, None)
+
     # ------------------------------------------------------------ update
     def update(self, dt):
         self.t += dt
         keys = pygame.key.get_pressed()
-        hide = self.scene == "dungeon" and self.state == "play" and not self.paused
+        hide = self.scene == "dungeon" and self.state == "play" and not self.paused and not self.show_inv
         if hide != self.mouse_hidden:                   # the dungeon draws its own crosshair
             self.mouse_hidden = hide
             pygame.mouse.set_visible(not hide)
@@ -673,8 +699,9 @@ class Game:
             for a in self.animals:
                 a.update(dt, self.world)
             return
-        if self.paused or self.show_map:
+        if self.paused or self.show_map or self.show_inv:
             return
+        self.heal_t = max(0.0, self.heal_t - dt)
         talking = self.dialogue.active
         if self.music_on:
             want = 0.22 if talking else ((0.44 if self.combat.boss_lock else 0.32) if self.scene == "dungeon" else 0.45)
@@ -860,10 +887,13 @@ class Game:
             pad.blit(self.font_s.render(label, True, (255, 246, 226)), (5, 2))
             v.blit(pad, (tx - pad.get_width() // 2, ty - 18 + bob))
             v.blit(key, (tx - 10, ty + bob))
+        orb = self.statue_orb(cam)
         # day / night light
         r, g, b, a = tint_at(self.time)
         if a > 0:
             self.night.fill((r, g, b, a))
+            if -60 < orb[0] < VIEW_W + 60 and -60 < orb[1] < VIEW_H + 60:      # the statue lights its own corner
+                self.night.blit(self.glow_mask, (orb[0] - 56, orb[1] - 56), special_flags=pygame.BLEND_RGBA_SUB)
             if self.time > 17.5 or self.time < 6.3:
                 for lx, ly in self.world.lamps:
                     sx, sy = lx - cam[0], ly - cam[1]
@@ -883,6 +913,47 @@ class Game:
                     sx, sy = f_[2] - cam[0] + 16, f_[3] - cam[1] + 14
                     if -60 < sx < VIEW_W + 60 and -60 < sy < VIEW_H + 60:
                         v.blit(self.glow, (sx - 56, sy - 56), special_flags=pygame.BLEND_RGB_ADD)
+        self.draw_statue_fx(v, cam, orb)
+        self.draw_heal_fx(v, cam)
+
+    def statue_orb(self, cam):
+        """Screen position of the glowing orb in the goddess's hands."""
+        gx, gy = self.world.goddess
+        return int((gx + 1) * T - cam[0]), int((gy + 1) * T + 4 - 96 + 47 - cam[1])
+
+    def draw_statue_fx(self, v, cam, orb):
+        ox, oy = orb
+        if not (-60 < ox < VIEW_W + 60 and -80 < oy < VIEW_H + 80):
+            return
+        pulse = 0.5 + 0.5 * math.sin(self.t * 2.2)
+        img = self.holy[min(2, int(pulse * 3))]
+        v.blit(img, (ox - img.get_width() // 2, oy - img.get_height() // 2), special_flags=pygame.BLEND_RGB_ADD)
+        for i in range(7):                                   # motes of light drifting up around her
+            k = (self.t * 0.28 + i / 7.0) % 1.0
+            px = ox + math.sin(self.t * 0.9 + i * 2.1) * (10 + 12 * k)
+            py = oy + 30 - k * 78
+            a = math.sin(k * math.pi)
+            c = (int(150 * a), int(210 * a), int(255 * a))
+            v.fill(c, (int(px), int(py), 2, 2), special_flags=pygame.BLEND_RGB_ADD)
+
+    def draw_heal_fx(self, v, cam):
+        """Beam of light and rising sparkles on the hero after praying."""
+        if self.heal_t <= 0:
+            return
+        k = self.heal_t / 2.2
+        px, py = int(self.player.x - cam[0]), int(self.player.y - cam[1])
+        a = max(0.0, min(1.0, k * 1.6))
+        beam = pygame.Surface((26, 70), pygame.SRCALPHA)
+        for yy in range(70):
+            w = 6 + int(10 * (yy / 70))
+            pygame.draw.rect(beam, (190, 230, 255, int(110 * a * (1 - yy / 80))), (13 - w // 2, yy, w, 1))
+        v.blit(beam, (px - 13, py - 70))
+        for i in range(14):
+            ph = (i / 14.0 + (1 - k) * 1.6) % 1.0
+            sx = px + math.sin(i * 1.7 + self.t * 3) * 12
+            sy = py - 4 - ph * 46
+            c = (int(200 * a), int(240 * a), int(255 * a))
+            v.fill(c, (int(sx), int(sy), 2, 2), special_flags=pygame.BLEND_RGB_ADD)
 
     def text_shadow(self, v, font, text, pos, color=(255, 246, 226), sh=(40, 24, 20), center=False):
         img = font.render(text, True, color)
@@ -941,6 +1012,19 @@ class Game:
         icon = "Day" if 6.3 < self.time < 19 else "Night"
         self.text_shadow(v, self.font_s, icon, (66, 13), (200, 190, 160))
         self.text_shadow(v, self.font_s, f"Villagers met {self.met_count()}/{len(self.npcs)}", (14, 26), (255, 226, 150))
+        # hero vitals (HP / MP)
+        c = self.combat
+        self.panel(v, pygame.Rect(6, 46, 118, 36))
+        for i, (lab, cur, mx, fill, back) in enumerate((("HP", c.hp, c.max_hp, (190, 44, 60), (52, 20, 26)),
+                                                        ("MP", c.mp, c.max_mp, (60, 110, 235), (18, 24, 56)))):
+            by = 51 + i * 14
+            self.text_shadow(v, self.font_s, lab, (12, by), (255, 246, 226))
+            bar = pygame.Rect(30, by + 1, 88, 10)
+            pygame.draw.rect(v, back, bar, border_radius=3)
+            pygame.draw.rect(v, fill, (bar.x, bar.y, int(bar.w * cur / mx), bar.h), border_radius=3)
+            pygame.draw.rect(v, (235, 225, 215), bar, 1, border_radius=3)
+            t = self.font_s.render(f"{cur}/{mx}", True, (255, 255, 255))
+            v.blit(t, (bar.centerx - t.get_width() // 2, bar.y - 1))
         # minimap
         mm_rect = pygame.Rect(VIEW_W - 108, 6, 102, 102)
         self.panel(v, mm_rect, 200)
@@ -966,7 +1050,7 @@ class Game:
         self.dialogue.draw(v)
         if self.help_t > 0 and not self.dialogue.active:
             a = min(1.0, self.help_t / 2)
-            txt = "WASD move  SHIFT run  SPACE jump  E talk  M map  B music  H help"
+            txt = "WASD move  SHIFT run  SPACE jump  E talk  M map  I inventory  B music  H help"
             img = self.font_s.render(txt, True, (255, 246, 226))
             s = pygame.Surface((img.get_width() + 18, 20), pygame.SRCALPHA)
             pygame.draw.rect(s, (40, 26, 22, 170), s.get_rect(), border_radius=8)
@@ -997,7 +1081,7 @@ class Game:
         pygame.draw.circle(v, (255, 255, 255), (px_, py_), 5)
         pygame.draw.circle(v, (230, 40, 40), (px_, py_), 3)
         self.text_shadow(v, self.font_m, "Hearthmoor & the Whisperwood", (VIEW_W // 2, y - 28), center=True)
-        self.text_shadow(v, self.font_s, "Press M to close   -   yellow: villagers you've met   -   purple: dungeon gate",
+        self.text_shadow(v, self.font_s, "Press M to close   -   yellow: villagers   -   purple: dungeon gate   -   light blue: goddess statue",
                          (VIEW_W // 2, y + h + 12), (210, 200, 180), center=True)
 
     def draw_gate_marker(self, v, mx, my):
@@ -1028,6 +1112,8 @@ class Game:
             self.draw_ui(v)
             if self.show_map:
                 self.draw_map(v)
+            if self.show_inv:
+                draw_inventory(self, v)
             if self.paused:
                 if self.menu_screen == "controls":
                     draw_controls(self, v)
@@ -1051,6 +1137,11 @@ class Game:
             if m and m.hover(self.mouse_view()):
                 return self.menu_do(m.key())
             return True
+        if self.show_inv and self.state == "play" and not self.paused:
+            if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
+                inv_click(self, self.mouse_view())
+            if e.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEWHEEL):
+                return True
         if e.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEWHEEL):
             # attack is read as "left button held" in update(); right click / scroll swaps weapon
             if self.state == "play" and not self.paused and self.scene == "dungeon":
@@ -1065,6 +1156,12 @@ class Game:
                 pygame.display.toggle_fullscreen()
             if menu_open:
                 return self.menu_key(k)
+            if self.show_inv:                                  # inventory screen swallows the keyboard
+                if k in (pygame.K_ESCAPE, pygame.K_i, pygame.K_TAB):
+                    self.show_inv = False
+                else:
+                    inv_key(self, k)
+                return True
             # tutorial: TAB skips it, ENTER / E continues on the "read this" steps
             if self.tut.active and self.scene == "village":
                 if k == pygame.K_TAB:
@@ -1091,6 +1188,12 @@ class Game:
                     self.open_pause()
             elif k == pygame.K_b:
                 self.toggle_music()
+            elif k == pygame.K_i and not self.dialogue.active and not self.show_map and not self.combat.victory_active:
+                self.show_inv = True
+                self.play("blip")
+            elif k in (pygame.K_1, pygame.K_2) and not self.dialogue.active and not self.show_map \
+                    and not self.combat.victory_active:
+                self.combat.use_item(QUICK_ITEMS[0 if k == pygame.K_1 else 1])
             elif k == pygame.K_SPACE and not self.show_map:
                 if self.dialogue.active:
                     self.dialogue.advance()

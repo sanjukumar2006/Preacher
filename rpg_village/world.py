@@ -20,7 +20,7 @@ FOOT = {
     "lamp": (1, 1), "barrel": (1, 1), "crate": (1, 1), "hay": (1, 1), "sign": (1, 1),
     "board": (2, 1), "bench": (2, 1), "scarecrow": (1, 1), "anvil": (1, 1), "campfire": (1, 1),
     "fence_h": (1, 1), "fence_v": (1, 1), "well": (2, 1), "stall_red": (3, 2), "stall_blue": (3, 2),
-    "shrine": (3, 2), "tent": (3, 2),
+    "shrine": (3, 2), "tent": (3, 2), "goddess": (2, 1),
 }
 
 HOUSES = [  # name, x0, y0, width, display name, door text
@@ -385,6 +385,20 @@ class World:
         # brazier light for the night pass
         for x in (46, 51):
             self.lamps.append((x * T + 16, 87 * T - 98))
+        # Goddess statue west of the forecourt: a small flagstone plaza joined to the gate courtyard.
+        for y in range(84, 88):
+            for x in range(40, 45):
+                if ((x + 0.5 - 42.5) / 2.9) ** 2 + ((y + 0.5 - 85.8) / 2.3) ** 2 <= 1.0 \
+                        and not self.occupied[y][x] and self.terrain[y][x] not in (WATER, DEEP, DOCK):
+                    self.terrain[y][x] = COBBLE
+                    self.occupied[y][x] = True
+        for x in (43, 44):                                   # little walkway into the forecourt
+            self.terrain[86][x] = COBBLE
+            self.occupied[86][x] = True
+        self.place("goddess", 41, 84, force=True)
+        self.goddess = (41, 84)                              # tile of the statue's left foot (used by main.py)
+        self.interact.append(dict(rect=pygame.Rect(40 * T, 82 * T, 4 * T, 5 * T), id="goddess",
+                                  name="Goddess Statue", text=[]))
         # E prompt: anywhere on the landing / just in front of it
         self.interact.append(dict(rect=pygame.Rect(46 * T, 85 * T, 6 * T, 4 * T), id="dungeon", name="The Hollow Below",
                                   text=["A stone stairwell sinks into the dark."]))

@@ -26,6 +26,8 @@ The dungeon entrance at the end of the south road is now a sunken stone stairwel
 | M | world map |
 | N | skip one hour of time |
 | H | toggle help, F11 fullscreen, ESC pause / close dialogue |
+| I | open / close the inventory |
+| 1 / 2 | drink a Health / Mana potion (village and dungeon) |
 | **Dungeon only** | |
 | Left mouse (hold) | attack with the equipped weapon, aimed at the cursor |
 | Right mouse / mouse wheel | swap sword <-> magic |
@@ -101,3 +103,15 @@ Quick test: `python main.py --boss-test` (jumps straight to the throne room).
 He is immune while rising, roaring (phase changes) and dying. Beating him shows a victory screen (press **E**), plays the village
 music and unseals the stairs. He does not return once defeated. `INFINITE_HP` in `combat.py` still applies - set it to `False`
 for a real fight.
+
+## Mana, inventory and the goddess statue
+- **Mana pool of 100 MP** (blue bar under HP, shown in the village and the dungeon). The magic weapon is now a **fireball**:
+  every cast costs **5 MP**; with less than 5 MP it fizzles ("Not enough mana!"). **Every enemy you defeat restores mana**
+  (6 MP, 10 MP for big monsters, 25 MP for Grimhorn). Tuning: `MAX_MP`, `FIREBALL_COST`, `MANA_ON_KILL*` at the top of `combat.py`.
+- **Inventory (press I)**: 12 slots, stacks of 20. You start with 2 Health Potions (+40 HP) and 2 Mana Potions (+40 MP).
+  Select with arrows / WASD / mouse, then E / Enter or the USE button. **1** and **2** quick-drink from anywhere.
+  Monsters drop potions straight into your pack (12% each per kill, `DROPS` in `combat.py`); Grimhorn drops 3 of each.
+  New items: add an entry to `ITEMS` in `inventory.py` (+ an icon in `draw_icon`).
+- **Goddess statue**: a glowing statue stands on its own little flagstone plaza just west of the dungeon gate courtyard
+  (light-blue mark on the minimap and map). Stand in front of it and press **E** to fully restore HP and MP - as often as you like.
+  Art: `assets/objects/goddess.png` (regenerate with `python tools/make_goddess.py`), placed in `World.build_gate`.

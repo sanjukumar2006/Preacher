@@ -24,10 +24,20 @@ import pygame
 
 from dungeon import DH, DW, FLOOR, LAVA, PILLAR, T, WALL, WATER
 from entities import DIRS, Mover
+from inventory import ITEMS, Inventory
 
 # --------------------------------------------------------------------------- tuning
 INFINITE_HP = False          # <- flip to False later to make enemy hits actually hurt
 PLAYER_MAX_HP = 100
+MAX_MP = 100                # mana pool
+FIREBALL_COST = 5           # mana per fireball
+MANA_ON_KILL = 6            # mana regained for every enemy you defeat...
+MANA_ON_KILL_BIG = 10       # ...and for the big ones (ogres, brutes, drakes, wyrms)
+MANA_ON_BOSS = 25
+# chance that a slain monster drops a potion straight into your pack (checked once per item)
+DROPS = dict(health_potion=0.12, mana_potion=0.12)
+BOSS_DROPS = dict(health_potion=3, mana_potion=3)
+FIRE = (255, 140, 50)       # fireball colour
 CHEST = 14                  # px between a character's feet and its chest (hit / aim centre)
 
 SWORD = dict(damage=14, cooldown=0.36, duration=0.20, reach=46, arc=135.0, knock=260.0, lunge=95.0)
@@ -430,6 +440,8 @@ class Combat:
         self.t = 0.0
         self.weapon = "sword"
         self.max_hp = self.hp = PLAYER_MAX_HP
+        self.max_mp = self.mp = MAX_MP
+        self.inv = Inventory()
         self.hits_taken = 0
         self.kills = 0
         self.cam_used = (0, 0)
@@ -456,6 +468,8 @@ class Combat:
     def world(self):
         return self.dungeon.world
 
+    dungeon_active = False                      # main.py sets this while the hero is underground
+
     def reset_player_state(self):
         self.atk_cd = self.atk_t = 0.0
         self.atk_angle = self.aim = 0.0
@@ -469,6 +483,7 @@ class Combat:
         self.kb_t = 0.0
         self.swap_cd = 0.0
         self.dodge_msg_cd = 0.0
+        self.nomana_cd = self.mp_flash = 0.0
         self.player.speed_mul = 1.0
         self.player.face_lock = None
 
@@ -658,12 +673,64 @@ class Combat:
         if e.hp <= 0:
             e.die(self)
             self.kills += 1
+            self.reward_kill(e)
             self.burst(e.x, e.y - e.chest, e.d["color"], 22, 170, .6, 3)
             self.sfx.play("die")
             self.shake(2, 0.15)
         elif not e.big:
             e.state, e.state_t = "stagger", 0.3          # light monsters flinch and lose their attack
             e.cd = max(e.cd, 0.45)
+
+    def reward_kill(self, e):
+        """Defeating a monster refunds a little mana and may drop potions into the pack."""
+        p = self.player
+        gain = MANA_ON_BOSS if e.is_boss else (MANA_ON_KILL_BIG if e.big else MANA_ON_KILL)
+        got = min(gain, self.max_mp - self.mp)
+        if got > 0:
+            self.mp += got
+            self.text(f"+{got} MP", p.x, p.y - 44, (130, 175, 255), 0.9)
+        drops = dict(BOSS_DROPS) if e.is_boss else {k: 1 for k, ch in DROPS.items() if random.random() < ch}
+        for k, n in drops.items():
+            left = self.inv.add(k, n)
+            if left < n:
+                self.text(f"+{n - left} {ITEMS[k]['name']}", e.x, e.y - e.chest - 34, (255, 235, 150), 1.2)
+                self.toast(f"Found {n - left}x {ITEMS[k]['name']}", 2.5)
+            if left:
+                self.toast("Your pack is full!", 2.0)
+
+    def use_item(self, key):
+        """Drink a potion from the pack. Returns True if it was used."""
+        d, p = ITEMS[key], self.player
+        if self.inv.count(key) <= 0:
+            self.toast(f"You have no {d['name']}s.", 2.0)
+            return False
+        if "hp" in d and self.hp >= self.max_hp:
+            self.toast("Your health is already full.", 2.0)
+            return False
+        if "mp" in d and self.mp >= self.max_mp:
+            self.toast("Your mana is already full.", 2.0)
+            return False
+        self.inv.remove(key)
+        if "hp" in d:
+            got = min(d["hp"], self.max_hp - self.hp)
+            self.hp += got
+            msg, col = f"+{got} HP", (120, 235, 130)
+        else:
+            got = min(d["mp"], self.max_mp - self.mp)
+            self.mp += got
+            msg, col = f"+{got} MP", (130, 175, 255)
+        self.toast(f"Used {d['name']}  {msg}", 2.2)
+        self.sfx.play("swap")
+        if self.dungeon_active:
+            self.text(msg, p.x, p.y - 40, col, 0.9)
+            self.burst(p.x, p.y - CHEST, col, 12, 70, .5)
+        return True
+
+    def restore_all(self):
+        """Goddess statue: full HP and full MP. Returns True if anything was restored."""
+        need = self.hp < self.max_hp or self.mp < self.max_mp
+        self.hp, self.mp = self.max_hp, self.max_mp
+        return need
 
     def hurt_player(self, dmg, sx, sy):
         """Called when an enemy attack connects. Returns True if the hit landed."""
@@ -704,8 +771,8 @@ class Combat:
         self.atk_t = 0.0
         self.sfx.play("swap")
         p = self.player
-        self.text(self.weapon.capitalize(), p.x, p.y - 40,
-                  (255, 230, 150) if self.weapon == "sword" else (140, 210, 255), 0.8)
+        self.text("Sword" if self.weapon == "sword" else "Fireball", p.x, p.y - 40,
+                  (255, 230, 150) if self.weapon == "sword" else (255, 170, 90), 0.8)
 
     def dodge(self, keys):
         if self.roll_cd > 0 or self.roll_t > 0 or self.kb_t > 0:
@@ -734,12 +801,22 @@ class Combat:
             self.atk_cd, self.atk_t, self.swing_hit = SWORD["cooldown"], SWORD["duration"], False
             self.sfx.play("swing")
         else:
+            if self.mp < FIREBALL_COST:                    # out of mana: the fizzle
+                self.face_t = 0.0
+                self.atk_cd = 0.3
+                self.mp_flash = 0.6
+                if self.nomana_cd <= 0:
+                    self.nomana_cd = 0.9
+                    self.text("Not enough mana!", p.x, p.y - 40, (130, 165, 255), 0.9)
+                    self.sfx.play("swap")
+                return
+            self.mp -= FIREBALL_COST
             self.atk_cd, self.atk_t = MAGIC["cooldown"], MAGIC["duration"]
             a = self.aim
             bx, by = p.x + math.cos(a) * 14, p.y - CHEST + math.sin(a) * 14
-            self.spawn_bolt(bx, by, a, MAGIC["speed"], MAGIC["damage"], "player", (120, 200, 255),
-                            MAGIC["radius"], MAGIC["life"])
-            self.burst(bx, by, (140, 210, 255), 6, 80, .25)
+            self.spawn_bolt(bx, by, a, MAGIC["speed"], MAGIC["damage"], "player", FIRE,
+                            MAGIC["radius"] + 1, MAGIC["life"])
+            self.burst(bx, by, FIRE, 6, 80, .25)
             self.sfx.play("cast")
 
     def sword_strike(self):
@@ -826,7 +903,7 @@ class Combat:
     def update(self, dt, keys, aim_pt, firing):
         p, world = self.player, self.world
         self.t += dt
-        for name in ("atk_cd", "roll_cd", "invuln", "hurt_flash", "swap_cd", "face_t", "dodge_msg_cd", "shake_t"):
+        for name in ("atk_cd", "roll_cd", "invuln", "hurt_flash", "swap_cd", "face_t", "dodge_msg_cd", "shake_t", "nomana_cd", "mp_flash"):
             setattr(self, name, max(0.0, getattr(self, name) - dt))
         if self.victory_active:                              # actors freeze while the victory screen is up
             self.victory_t += dt
@@ -1125,7 +1202,7 @@ class Combat:
         if self.weapon == "magic" and self.roll_t <= 0:
             a = self.aim
             ox, oy = S(p.x + math.cos(a) * 13, p.y - CHEST + math.sin(a) * 13 - 2)
-            glow(fx, ox, oy, 14 if self.atk_t > 0 else 9, (110, 190, 255), 0.9 if self.atk_t > 0 else 0.55)
+            glow(fx, ox, oy, 14 if self.atk_t > 0 else 9, FIRE, 0.9 if self.atk_t > 0 else 0.55)
         # monster telegraphs
         for e in self.enemies:
             if e.is_boss:
@@ -1190,17 +1267,17 @@ class Combat:
             pygame.draw.line(v, (220, 230, 245), (x + 8, y + 24), (x + 24, y + 8), 3)
             pygame.draw.line(v, (235, 195, 95), (x + 8, y + 17), (x + 15, y + 24), 3)
             pygame.draw.line(v, (140, 90, 50), (x + 6, y + 26), (x + 9, y + 23), 3)
-        else:
-            pygame.draw.circle(v, (50, 90, 190), (x + 16, y + 16), 8)
-            pygame.draw.circle(v, (140, 205, 255), (x + 16, y + 16), 6)
-            pygame.draw.circle(v, (255, 255, 255), (x + 14, y + 14), 2)
-            for dx, dy in ((0, -12), (0, 12), (-12, 0), (12, 0)):
-                pygame.draw.line(v, (170, 220, 255), (x + 16 + dx // 2, y + 16 + dy // 2), (x + 16 + dx, y + 16 + dy), 1)
+        else:                                                    # fireball
+            pygame.draw.polygon(v, (200, 60, 30), [(x + 8, y + 24), (x + 16, y + 4), (x + 22, y + 14), (x + 26, y + 26)])
+            pygame.draw.circle(v, (230, 90, 30), (x + 17, y + 19), 9)
+            pygame.draw.circle(v, (255, 160, 50), (x + 17, y + 19), 7)
+            pygame.draw.circle(v, (255, 230, 120), (x + 17, y + 20), 4)
+            pygame.draw.circle(v, (255, 255, 230), (x + 16, y + 19), 2)
 
     def draw_hud(self, v, font, font_s, mouse):
         # bottom-left panel
-        px, py = 6, VIEW_H - 80
-        panel = pygame.Surface((232, 74), pygame.SRCALPHA)
+        px, py = 6, VIEW_H - 96
+        panel = pygame.Surface((232, 90), pygame.SRCALPHA)
         pygame.draw.rect(panel, (22, 16, 30, 215), panel.get_rect(), border_radius=8)
         pygame.draw.rect(panel, (148, 122, 168, 230), panel.get_rect(), 1, border_radius=8)
         v.blit(panel, (px, py))
@@ -1217,7 +1294,16 @@ class Combat:
         else:
             t = font_s.render(f"{self.hp}/{self.max_hp}", True, (255, 255, 255))
             v.blit(t, (bar.centerx - t.get_width() // 2, bar.y - 1))
-        v.blit(font_s.render(f"Hits taken {self.hits_taken}    Slain {self.kills}", True, (200, 190, 215)), (x0, y0 + 17))
+        # mana bar
+        v.blit(font_s.render("MP", True, (170, 200, 255)), (x0, y0 + 16))
+        mbar = pygame.Rect(x0 + 22, y0 + 15, 168, 12)
+        pygame.draw.rect(v, (12, 18, 46), mbar, border_radius=4)
+        pygame.draw.rect(v, (60, 110, 235), (mbar.x, mbar.y, int(mbar.w * self.mp / self.max_mp), mbar.h), border_radius=4)
+        pygame.draw.rect(v, (255, 90, 90) if self.mp_flash > 0 and int(self.t * 14) % 2 == 0 else (190, 215, 255),
+                         mbar, 1, border_radius=4)
+        t = font_s.render(f"{self.mp}/{self.max_mp}", True, (255, 255, 255))
+        v.blit(t, (mbar.centerx - t.get_width() // 2, mbar.y - 1))
+        v.blit(font_s.render(f"Hits taken {self.hits_taken}    Slain {self.kills}", True, (200, 190, 215)), (x0, y0 + 66))
         # weapon slots
         for i, name in enumerate(("sword", "magic")):
             sx, sy = x0 + i * 38, y0 + 31
@@ -1231,6 +1317,10 @@ class Combat:
                     shade = pygame.Surface((32, h), pygame.SRCALPHA)
                     shade.fill((0, 0, 0, 150))
                     v.blit(shade, (sx, sy))
+            if name == "magic":
+                ok = self.mp >= FIREBALL_COST
+                v.blit(font_s.render(str(FIREBALL_COST), True, (150, 190, 255) if ok else (255, 110, 110)),
+                       (sx + 23, sy + 19))
             pygame.draw.rect(v, (255, 214, 120) if active else (90, 78, 110), (sx, sy, 32, 32), 2 if active else 1,
                              border_radius=5)
         # dodge meter
@@ -1255,6 +1345,16 @@ class Combat:
         pygame.draw.rect(box, (148, 122, 168, 230), box.get_rect(), 1, border_radius=7)
         box.blit(img, (9, 4))
         v.blit(box, (VIEW_W - w - 6, 6))
+        # potion quick-use
+        q = [f"[{ITEMS[k]['key']}] {ITEMS[k]['name']} x{self.inv.count(k)}" for k in ("health_potion", "mana_potion")]
+        qw = max(font_s.size(t)[0] for t in q) + 16
+        qb = pygame.Surface((qw, 32), pygame.SRCALPHA)
+        pygame.draw.rect(qb, (22, 16, 30, 200), qb.get_rect(), border_radius=7)
+        pygame.draw.rect(qb, (148, 122, 168, 230), qb.get_rect(), 1, border_radius=7)
+        for i, t in enumerate(q):
+            have = self.inv.count(("health_potion", "mana_potion")[i]) > 0
+            qb.blit(font_s.render(t, True, (235, 224, 246) if have else (130, 120, 140)), (8, 3 + i * 14))
+        v.blit(qb, (VIEW_W - qw - 6, 32))
         if self.boss is not None:
             self.boss.draw_ui(self, v, font, font_s)
         if self.victory_active:
@@ -1262,7 +1362,7 @@ class Combat:
             draw_victory(self, v, font, font_s)
         # crosshair
         mx, my = int(mouse[0]), int(mouse[1])
-        col = (255, 230, 150) if self.weapon == "sword" else (140, 210, 255)
+        col = (255, 230, 150) if self.weapon == "sword" else (255, 170, 90)
         pygame.draw.circle(v, col, (mx, my), 7, 1)
         for ax, ay, bx, by in ((-12, 0, -6, 0), (6, 0, 12, 0), (0, -12, 0, -6), (0, 6, 0, 12)):
             pygame.draw.line(v, col, (mx + ax, my + ay), (mx + bx, my + by), 1)

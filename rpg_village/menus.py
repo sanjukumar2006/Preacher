@@ -172,10 +172,11 @@ def draw_ask(g, v):
 
 CONTROLS_VILLAGE = [("WASD / Arrows", "Move"), ("SHIFT", "Run (hold)"), ("SPACE", "Jump"),
                     ("E / ENTER", "Talk / interact"), ("M", "World map"), ("N", "Skip an hour"),
-                    ("B", "Music on / off"), ("H", "Show / hide help bar"), ("F11", "Fullscreen"),
-                    ("ESC", "Pause menu")]
-CONTROLS_DUNGEON = [("Left mouse", "Attack (hold)"), ("Right mouse / wheel", "Swap sword and magic"),
-                    ("SPACE", "Dodge roll"), ("E", "Stairs / purple gate")]
+                    ("I", "Inventory"), ("1 / 2", "Health / mana potion"),
+                    ("B / H", "Music / help bar"), ("F11 / ESC", "Fullscreen / pause")]
+CONTROLS_DUNGEON = [("Left mouse", "Attack (hold)"), ("Right mouse / wheel", "Swap sword / fireball"),
+                    ("SPACE", "Dodge roll"), ("E", "Stairs / purple gate"),
+                    ("I", "Inventory"), ("1 / 2", "Drink potions")]
 
 
 def draw_controls(g, v):
@@ -197,8 +198,8 @@ def draw_controls(g, v):
         y = y0 + 22 + i * 20
         g.text_shadow(v, g.font, k, (x1, y), GOLD, SHADOW)
         g.text_shadow(v, g.font, d, (x1 + 132, y), CREAM, SHADOW)
-    tips = ["Find the stone stairwell far to the south of the village. Slay every monster on a floor "
-            "to open the way, and keep rolling - a dodge makes you invincible.",
+    tips = ["Fireballs cost 5 MP and every kill returns a little. The goddess statue outside the "
+            "dungeon gate refills your HP and MP.",
             "On floor 5, the purple gate leads to the final boss."]
     ty = y0 + 22 + len(CONTROLS_DUNGEON) * 20 + 10
     for tip in tips:
@@ -265,7 +266,10 @@ class Tutorial:
                   "Stand on the landing in front of it and press E to descend."),
         dict(id="combat", title="Fighting", info=True,
              text="In the dungeon: hold LEFT MOUSE to attack toward your cursor, RIGHT MOUSE or the "
-                  "WHEEL to swap sword and magic, and SPACE to dodge roll. Rolling makes you invincible."),
+                  "WHEEL to swap sword and fireball, and SPACE to dodge roll. Rolling makes you invincible."),
+        dict(id="mana", title="Mana, Items & the Goddess", info=True,
+             text="Fireballs cost 5 MP; kills restore a little. Press I for your inventory, 1 / 2 to drink "
+                  "potions. The goddess statue by the gate restores HP and MP."),
         dict(id="done", title="You're ready!", info=True,
              text="Good luck, traveler. You can replay this tutorial from the pause menu any time."),
     ]
