@@ -5,7 +5,15 @@ pet the dogs, read notice boards, find the glowing shrine, and watch day turn to
 
 ## Run
     pip install pygame
-    python main.py            # options: --seed 42   --skip-title   --regen-assets
+    python main.py            # options: --seed 42   --skip-title   --regen-assets   --boss-test
+
+## Title screen, menus and tutorial
+- The title screen has **New Game / Controls / Music / Quit** (plus **Continue** once a game is running). Use W/S or the arrow keys + ENTER, or the mouse.
+- **New Game** asks *"Would you like a tutorial?"* (Y / N). The tutorial teaches movement, running, jumping, talking, the map, handy keys and the dungeon controls. ENTER continues the read-only steps, **TAB** skips it.
+- **ESC** opens the pause menu: Resume, Controls, Music, Replay Tutorial, Main Menu, Quit Game (it also works inside the dungeon now).
+
+## The Hollow Gate
+The dungeon entrance at the end of the south road is now a sunken stone stairwell with a flagstone forecourt, rune seal, braziers, mist, bones and a warning sign (art: `gate.py`, layout: `World.build_gate`). It is marked on the minimap and on the big map (M) as **The Hollow Below**.
 
 ## Controls
 | Key | Action |
@@ -24,7 +32,9 @@ pet the dogs, read notice boards, find the glowing shrine, and watch day turn to
 | SPACE | dodge roll (invincible while rolling) |
 
 ## What is in the folder
-- `main.py`            game loop, rendering, UI, day/night, minimap
+- `main.py`            game loop, rendering, UI, day/night, minimap, menu flow
+- `menus.py`           title screen, main/pause menus, controls page, interactive tutorial
+- `gate.py`            dungeon gate art + animated braziers / glow / mist
 - `world.py`           terrain noise, village layout, roads, forest, decor, collision, baked ground renderer
 - `entities.py`        player, villagers (wander AI), animals, dialogue box
 - `combat.py`          battle system: weapons, dodge roll, monster AI, projectiles, effects, combat HUD

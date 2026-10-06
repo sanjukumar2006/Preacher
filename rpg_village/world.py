@@ -210,13 +210,7 @@ class World:
         self.road([(24, 60.5), (62, 60.5)], 2)
         self.road([(61.5, 60.5), (61.5, 66.5)], 2)
         self.road([(48.5, 60.0), (48.5, 88.5)], 2.5)
-        self.interact.append(dict(
-            rect=pygame.Rect(46 * T, 86 * T, 5 * T, 3 * T),
-            name="Dungeon Entrance",
-            text=["A black stone arch yawns beneath the trees.",
-                  "Cold air rises from the darkness below. There is no sign of where the passage leads.",
-                  "Press E to descend into The Hollow Below."]
-        ))
+        # (the stone stairwell at the end of this road is built by build_gate() below)
         # plaza
         for y in range(H):
             for x in range(W):
@@ -355,6 +349,45 @@ class World:
             self.place("tree_cherry", tx, ty)
         for (tx, ty) in ((24, 44), (35, 36), (33, 58), (63, 36), (70, 52), (66, 56)):
             self.place(rng.choice(("tree_oak", "tree_oak", "tree_autumn")), tx, ty)
+        self.build_gate()
+
+    # ---------------------------------------------------------------- gate
+    def build_gate(self):
+        """The Hollow Gate at the end of the south road: flagstone forecourt, sunken stairwell,
+        two braziers and some clutter.  Art is painted by gate.py; this only sets up the map data."""
+        # props first (place() refuses occupied tiles), then claim the whole forecourt
+        self.place("sign", 45, 85)
+        self.interact.append(dict(rect=pygame.Rect(45 * T - 8, 85 * T - 6, 48, 44), name="Warning Sign",
+                                  text=["DANGER: THE HOLLOW BELOW.",
+                                        "Five floors of stone, shadow and teeth. Those who descend rarely climb back up.",
+                                        "Bring a sword. Bring courage. Bring a very good reason."]))
+        for kind, tx, ty in (("barrel", 44, 88), ("crate", 44, 89), ("barrel", 52, 89), ("crate", 52, 88),
+                             ("rock_l", 43, 92), ("rock_s", 53, 91), ("bush", 44, 84), ("bush_berry", 52, 83)):
+            self.place(kind, tx, ty)
+        # flagstone forecourt (rounded) - the road runs straight into it
+        for y in range(81, 95):
+            for x in range(42, 56):
+                e = ((x + 0.5 - 49.0) / 4.3) ** 2 + ((y + 0.5 - 87.0) / 5.3) ** 2
+                if e <= 1.0 and self.terrain[y][x] not in (WATER, DEEP, DOCK):
+                    self.terrain[y][x] = COBBLE
+                    self.occupied[y][x] = True
+        # stairwell (x 47..50) + side walls (46, 51) + back wall (row 90) are solid
+        for y in range(87, 91):
+            for x in range(46, 52):
+                self.blocked[y][x] = True
+                self.occupied[y][x] = True
+        # the two brazier pillars on row 86
+        for x in (46, 51):
+            self.blocked[86][x] = True
+            self.occupied[86][x] = True
+        for x in (47, 48, 49, 50):
+            self.occupied[86][x] = True
+        # brazier light for the night pass
+        for x in (46, 51):
+            self.lamps.append((x * T + 16, 87 * T - 98))
+        # E prompt: anywhere on the landing / just in front of it
+        self.interact.append(dict(rect=pygame.Rect(46 * T, 85 * T, 6 * T, 4 * T), id="dungeon", name="The Hollow Below",
+                                  text=["A stone stairwell sinks into the dark."]))
 
     # -------------------------------------------------------------- forest
     def build_forest(self):

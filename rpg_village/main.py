@@ -1,12 +1,14 @@
 
 """Hearthmoor - a tiny open-world village RPG made with pygame.
 
+Title screen: New Game / Controls / Music / Quit, then an optional tutorial.
+
 Controls
   WASD / Arrow keys  move          SHIFT  run
   SPACE              jump (also advances dialogue)
   E / ENTER          talk / interact / continue dialogue
   M  world map       N  skip an hour of time      H  help
-  F11  fullscreen    ESC  pause
+  F11  fullscreen    ESC  pause menu (resume / controls / music / tutorial / main menu / quit)
 
 In the dungeon (battle):
   LEFT MOUSE (hold)    attack with the equipped weapon, aimed at the cursor
@@ -39,6 +41,8 @@ import world as W
 from world import FOOT, HOUSES, T, Baked, World
 from dungeon import Dungeon
 from combat import Combat
+import gate
+from menus import (MenuList, Tutorial, draw_ask, draw_controls, draw_pause, draw_title_screen, make_motes)
 
 VIEW_W, VIEW_H = 640, 360
 
@@ -82,7 +86,7 @@ def radial(size, color, power=1.8):
 
 
 class Game:
-    def __init__(self, seed=7, skip_title=False):
+    def __init__(self, seed=7, skip_title=False, begin_new=False):
         pygame.mixer.pre_init(22050, -16, 1, 512)
         pygame.init()
         try:
@@ -114,6 +118,8 @@ class Game:
         print("Generating village terrain...")
         self.world = World(seed)
         self.baked = Baked(self.world, self.a)
+        gate.paint_ground(self.baked.ground, self.world)      # dungeon gate art is baked into the ground
+        self.gatefx = gate.GateFX()
         self.build_props()
         self.dungeon = Dungeon(self.a["dungeon"])
         self.scene = "village"
@@ -148,6 +154,17 @@ class Game:
         self.center_camera(True)
         self.time = 9.0           # hour of the day
         self.state = "play" if skip_title else "title"
+        self.started = bool(skip_title)            # a game is in progress (enables "Continue")
+        self.restart = False
+        self.menu_screen = "tutorial_ask" if begin_new else "main"
+        self.controls_back = "main"
+        self.motes = make_motes()
+        self.tut = Tutorial()
+        self.dungeon_hint = False
+        self._last_mouse = None
+        self.title_cam = list(self.cam)
+        self.menu_main = self.menu_ask = self.menu_pause = None
+        self.build_menus()
         self.t = 0.0
         self.show_map = False
         self.paused = False
@@ -193,6 +210,7 @@ class Game:
                 item[1] = None
                 self.campfires.append(item)
             self.props.append(item)
+        self.props.extend(gate.pillar_props())
         self.props.sort(key=lambda p: p[0])
 
     def make_butterflies(self):
@@ -225,9 +243,151 @@ class Game:
             else:
                 continue
             m.fill(c, (p["tx"], p["ty"], fw, fh if not k.startswith("house") else 4))
+        m.fill((74, 66, 96), (46, 86, 6, 5))                     # the Hollow Gate
+        m.fill((150, 80, 230), (47, 87, 4, 3))
         self.mini = m
         self.mini_small = m
         self.mini_big = pygame.transform.scale(m, (W.W * 3, W.H * 3))
+
+    # ------------------------------------------------------------ menus
+    def music_label(self):
+        return "Music: ON" if self.music_on else "Music: OFF"
+
+    def build_menus(self):
+        """(Re)build the button lists. The main menu gains 'Continue' once a game is running."""
+        main = []
+        if self.started:
+            main.append(("continue", "Continue"))
+        main += [("new", "New Game"), ("controls", "Controls"), ("music", self.music_label), ("quit", "Quit")]
+        sel = self.menu_main.sel if self.menu_main else 0
+        self.menu_main = MenuList(main, top=148, width=230)
+        self.menu_main.sel = min(sel, len(main) - 1)
+        if self.menu_ask is None:
+            self.menu_ask = MenuList([("yes", "Yes, show me the basics"), ("no", "No thanks, let's go")],
+                                     top=156, width=320)
+        if self.menu_pause is None:
+            self.menu_pause = MenuList([("resume", "Resume"), ("controls", "Controls"), ("music", self.music_label),
+                                        ("tutorial", "Replay Tutorial"), ("title", "Main Menu"),
+                                        ("quit", "Quit Game")], top=112, gap=29, width=230)
+
+    def current_menu(self):
+        if self.state == "title":
+            return {"main": self.menu_main, "tutorial_ask": self.menu_ask}.get(self.menu_screen)
+        if self.paused:
+            return self.menu_pause if self.menu_screen == "pause" else None
+        return None
+
+    def toggle_music(self):
+        self.music_on = not self.music_on
+        if self.music_on:
+            pygame.mixer.music.set_volume(self.music_volume)
+            if not self.paused:
+                pygame.mixer.music.unpause()
+                if not pygame.mixer.music.get_busy() and self.current_music:
+                    self.play_music(self.current_music, fade_ms=600)
+        else:
+            pygame.mixer.music.pause()
+        self.toast("Music on" if self.music_on else "Music off", 1.5)
+
+    def open_pause(self):
+        self.paused = True
+        self.menu_screen = "pause"
+        self.menu_pause.sel = 0
+        self.show_map = False
+        if self.music_on:
+            pygame.mixer.music.pause()
+
+    def resume(self):
+        self.paused = False
+        if self.music_on:
+            pygame.mixer.music.unpause()
+
+    def begin_game(self, tutorial):
+        """Leave the title screen and start playing (optionally with the tutorial)."""
+        self.state = "play"
+        self.started = True
+        self.time = 9.0
+        self.center_camera(True)
+        self.banner_text = self.place_name
+        self.banner_t = 3.2
+        self.build_menus()
+        if tutorial:
+            self.tut.start()
+            self.help_t = 0.0
+        else:
+            self.tut.active = False
+            self.help_t = 14.0
+
+    def menu_do(self, key):
+        """Run a menu action. Returns False when the game should quit."""
+        self.play("blip")
+        if key == "continue":
+            self.state = "play"
+        elif key == "new":
+            if self.started:                      # a fresh world: restart the whole game object
+                self.restart = True
+                return False
+            self.menu_screen = "tutorial_ask"
+            self.menu_ask.sel = 0
+        elif key == "controls":
+            self.controls_back = self.menu_screen
+            self.menu_screen = "controls"
+        elif key == "music":
+            self.toggle_music()
+        elif key == "quit":
+            return False
+        elif key in ("yes", "no"):
+            self.begin_game(key == "yes")
+        elif key == "resume":
+            self.resume()
+        elif key == "tutorial":
+            if self.scene != "village":
+                self.toast("Return to the village to replay the tutorial.", 3.0)
+            else:
+                self.resume()
+                self.tut.start()
+                self.help_t = 0.0
+        elif key == "title":
+            self.resume()
+            self.state = "title"
+            self.menu_screen = "main"
+            self.build_menus()
+            self.menu_main.sel = 0
+        return True
+
+    def menu_key(self, k):
+        scr = self.menu_screen
+        if scr == "controls":
+            if k in (pygame.K_ESCAPE, pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE, pygame.K_e,
+                     pygame.K_BACKSPACE):
+                self.menu_screen = self.controls_back
+                self.play("blip")
+            return True
+        menu = self.current_menu()
+        if menu is None:
+            return True
+        if k in (pygame.K_UP, pygame.K_w):
+            menu.move(-1)
+            self.play("blip")
+        elif k in (pygame.K_DOWN, pygame.K_s):
+            menu.move(1)
+            self.play("blip")
+        elif k in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE, pygame.K_e):
+            return self.menu_do(menu.key())
+        elif k == pygame.K_ESCAPE:
+            if scr == "pause":
+                self.resume()
+            elif scr == "tutorial_ask":
+                self.menu_screen = "main"
+            elif scr == "main" and self.started:
+                self.state = "play"
+        elif scr == "tutorial_ask" and k == pygame.K_y:
+            return self.menu_do("yes")
+        elif scr == "tutorial_ask" and k == pygame.K_n:
+            return self.menu_do("no")
+        elif scr == "pause" and k == pygame.K_q:
+            return False
+        return True
 
     # ----------------------------------------------------------- helpers
     def center_camera(self, snap=False):
@@ -279,6 +439,9 @@ class Game:
         self.banner_text = "The Hollow Below — Floor 1"
         self.banner_t = 3.2
         self.play_music("dark.mp3", fade_ms=1200)
+        if not self.dungeon_hint:
+            self.dungeon_hint = True
+            self.toast("LEFT CLICK attack   RIGHT CLICK swap weapon   SPACE dodge roll", 6.0)
 
     def exit_dungeon(self):
         if self.scene != "dungeon":
@@ -447,10 +610,11 @@ class Game:
             return
         kind, obj = tgt
         self.play("talk")
+        self.tut.notify(self, "interact")
         if kind == "dungeon_transition":
             self.change_dungeon_level(obj[0])
             return
-        if kind == "obj" and obj.get("name") == "Dungeon Entrance":
+        if kind == "obj" and obj.get("id") == "dungeon":
             self.enter_dungeon()
             return
         if kind == "npc":
@@ -491,8 +655,19 @@ class Game:
         if hide != self.mouse_hidden:                   # the dungeon draws its own crosshair
             self.mouse_hidden = hide
             pygame.mouse.set_visible(not hide)
+        if self.state == "title" or self.paused:        # menus: highlight the button under the mouse
+            mp = pygame.mouse.get_pos()
+            if mp != self._last_mouse:
+                self._last_mouse = mp
+                m = self.current_menu()
+                if m:
+                    m.hover(self.mouse_view())
         if self.state == "title":
-            self.cam = [self.cam[0], self.cam[1]]
+            # slow camera drift over the village while the time of day rolls on
+            self.time = (self.time + dt / 5.0) % 24.0
+            bx, by = self.title_cam
+            self.cam = [max(0, min(W.W * T - VIEW_W, bx + math.sin(self.t * 0.2) * 70)),
+                        max(0, min(W.H * T - VIEW_H, by + math.cos(self.t * 0.15) * 34))]
             for n in self.npcs:
                 n.update(dt, self.world, [self.player.foot])
             for a in self.animals:
@@ -556,6 +731,7 @@ class Game:
         for a in self.animals:
             a.update(dt, self.world)
         self.time = (self.time + dt / 22.0) % 24.0    # one in-game hour ~ 22 s
+        self.tut.update(dt, self)
         self.center_camera()
         self.update_place()
         self.banner_t = max(0, self.banner_t - dt)
@@ -608,16 +784,6 @@ class Game:
             return
         cam = (int(self.cam[0]), int(self.cam[1]))
         v.blit(self.baked.ground, (0, 0), (cam[0], cam[1], VIEW_W, VIEW_H))
-        # Southern dungeon entrance: a dark stone arch embedded in the road.
-        ex = pygame.Rect(46 * T - cam[0], 86 * T - cam[1], 5 * T, 3 * T)
-        if ex.right >= 0 and ex.left < VIEW_W and ex.bottom >= 0 and ex.top < VIEW_H:
-            pygame.draw.ellipse(v, (12, 10, 15), ex.inflate(-18, -4))
-            pygame.draw.rect(v, (62, 60, 68), (ex.x + 18, ex.y + 8, ex.w - 36, ex.h - 8), border_radius=16)
-            pygame.draw.rect(v, (25, 22, 30), (ex.x + 25, ex.y + 18, ex.w - 50, ex.h - 12), border_radius=12)
-            pygame.draw.line(v, (103, 98, 112), (ex.x + 22, ex.y + 15), (ex.x + 40, ex.y + 5), 3)
-            pygame.draw.line(v, (103, 98, 112), (ex.right - 22, ex.y + 15), (ex.right - 40, ex.y + 5), 3)
-            for gx in (ex.x + 16, ex.right - 16):
-                pygame.draw.circle(v, (86, 82, 94), (gx, ex.y + 23), 4)
         # animated water + shore foam
         f = int(self.t * 3) % 4
         tw = self.a["tiles"]
@@ -647,6 +813,7 @@ class Game:
             if view.collidepoint(a.x, a.y):
                 items.append((a.y, 1, a))
         items.sort(key=lambda i: i[0])
+        self.gatefx.draw_ground(v, cam, self.t)               # glow, rune seal and mist at the Hollow Gate
         cf = int(self.t * 6) % 2
         for _, kind, o in items:
             if kind == 0:
@@ -654,6 +821,7 @@ class Game:
                 v.blit(img, (o[2] - cam[0], o[3] - cam[1]))
             else:
                 o.draw(v, cam, self.shadow)
+        self.gatefx.draw_flames(v, cam, self.t)
         # chimney smoke
         for s in self.smoke:
             k = s[2] / 3.6
@@ -794,6 +962,7 @@ class Game:
             s.set_alpha(int(255 * max(0, min(1, a))))
             v.blit(s, ((VIEW_W - w) // 2, 12))
         self.draw_toasts(v)
+        self.tut.draw(self, v)
         self.dialogue.draw(v)
         if self.help_t > 0 and not self.dialogue.active:
             a = min(1.0, self.help_t / 2)
@@ -816,6 +985,9 @@ class Game:
         v.blit(self.mini_big, (x, y))
         for nm, (x0, y0, x1, y1) in PLACES:
             cx, cy = (x0 + x1) / 2 * 3, (y0 + y1) / 2 * 3
+            if nm == "The Hollow Gate":
+                self.draw_gate_marker(v, x + 49 * 3, y + 87 * 3)
+                continue
             self.text_shadow(v, self.font_s, nm, (x + cx, y + cy - 4), center=True)
         for n in self.npcs:
             if n.talk_count > 0:
@@ -825,41 +997,42 @@ class Game:
         pygame.draw.circle(v, (255, 255, 255), (px_, py_), 5)
         pygame.draw.circle(v, (230, 40, 40), (px_, py_), 3)
         self.text_shadow(v, self.font_m, "Hearthmoor & the Whisperwood", (VIEW_W // 2, y - 28), center=True)
-        self.text_shadow(v, self.font_s, "Press M to close  -  yellow dots: villagers you've met",
+        self.text_shadow(v, self.font_s, "Press M to close   -   yellow: villagers you've met   -   purple: dungeon gate",
                          (VIEW_W // 2, y + h + 12), (210, 200, 180), center=True)
 
-    def draw_title(self, v):
-        dim = pygame.Surface((VIEW_W, VIEW_H), pygame.SRCALPHA)
-        dim.fill((14, 10, 24, 120))
-        v.blit(dim, (0, 0))
-        bob = math.sin(self.t * 1.6) * 3
-        self.text_shadow(v, self.font_b, "HEARTHMOOR", (VIEW_W // 2, 62 + bob), (255, 226, 150), (70, 36, 24), True)
-        self.text_shadow(v, self.font_m, "A tiny open-world village adventure", (VIEW_W // 2, 128), (255, 246, 226), (40, 24, 20), True)
-        self.panel(v, pygame.Rect(VIEW_W // 2 - 170, 172, 340, 120), 190)
-        lines = ["WASD / Arrows .... move       SHIFT .... run", "SPACE .... jump        E / Enter .... talk",
-                 "M .... map    N .... skip time    B .... music", "F11 .... fullscreen       ESC .... pause",
-                 "DUNGEON: Left click attack   Right click / scroll swap",
-                 "         SPACE dodge roll"]
-        for i, l in enumerate(lines):
-            self.text_shadow(v, self.font, l, (VIEW_W // 2, 180 + i * 19), center=True)
-        if int(self.t * 2) % 2 == 0:
-            self.text_shadow(v, self.font_m, "Press ENTER to begin", (VIEW_W // 2, 300), (255, 255, 255), (40, 24, 20), True)
+    def draw_gate_marker(self, v, mx, my):
+        """Pulsing purple marker + label for the Hollow Gate on the big map."""
+        pulse = 0.5 + 0.5 * math.sin(self.t * 3.5)
+        r = 6 + int(pulse * 3)
+        halo = pygame.Surface((r * 4, r * 4), pygame.SRCALPHA)
+        pygame.draw.circle(halo, (170, 96, 240, int(60 + 80 * pulse)), (r * 2, r * 2), r * 2)
+        v.blit(halo, (mx - r * 2, my - r * 2))
+        pts = [(mx, my - r), (mx + r, my), (mx, my + r), (mx - r, my)]
+        pygame.draw.polygon(v, (40, 18, 70), pts)
+        pygame.draw.polygon(v, (196, 140, 255), pts, 2)
+        pygame.draw.rect(v, (240, 220, 255), (mx - 1, my - 3, 3, 6))                 # tiny stairwell glyph
+        self.text_shadow(v, self.font_s, "The Hollow Below", (mx, my + r + 4), (226, 196, 255), (30, 14, 40), True)
+        self.text_shadow(v, self.font_s, "dungeon gate", (mx, my + r + 16), (176, 150, 206), (30, 14, 40), True)
 
     def draw(self):
         v = self.view
         self.draw_world(v)
         if self.state == "title":
-            self.draw_title(v)
+            if self.menu_screen == "controls":
+                draw_controls(self, v)
+            elif self.menu_screen == "tutorial_ask":
+                draw_ask(self, v)
+            else:
+                draw_title_screen(self, v)
         else:
             self.draw_ui(v)
             if self.show_map:
                 self.draw_map(v)
             if self.paused:
-                dim = pygame.Surface((VIEW_W, VIEW_H), pygame.SRCALPHA)
-                dim.fill((10, 8, 8, 170))
-                v.blit(dim, (0, 0))
-                self.text_shadow(v, self.font_b, "PAUSED", (VIEW_W // 2, 120), (255, 226, 150), (70, 36, 24), True)
-                self.text_shadow(v, self.font_m, "ESC resume      Q quit", (VIEW_W // 2, 200), center=True)
+                if self.menu_screen == "controls":
+                    draw_controls(self, v)
+                else:
+                    draw_pause(self, v)
         self.screen.blit(v, (0, 0)) if self.screen.get_size() == v.get_size() else \
             self.screen.blit(pygame.transform.scale(v, self.screen.get_size()), (0, 0))
         pygame.display.flip()
@@ -868,6 +1041,16 @@ class Game:
     def handle(self, e):
         if e.type == pygame.QUIT:
             return False
+        menu_open = self.state == "title" or self.paused
+        if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1 and menu_open:
+            if self.menu_screen == "controls":
+                self.menu_screen = self.controls_back
+                self.play("blip")
+                return True
+            m = self.current_menu()
+            if m and m.hover(self.mouse_view()):
+                return self.menu_do(m.key())
+            return True
         if e.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEWHEEL):
             # attack is read as "left button held" in update(); right click / scroll swaps weapon
             if self.state == "play" and not self.paused and self.scene == "dungeon":
@@ -880,42 +1063,34 @@ class Game:
             k = e.key
             if k == pygame.K_F11:
                 pygame.display.toggle_fullscreen()
-            if self.state == "title":
-                if k in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_e, pygame.K_KP_ENTER):
-                    self.state = "play"
-                    self.play("talk")
-                    self.banner_t = 3.2
-                elif k == pygame.K_ESCAPE:
-                    return False
-                return True
-            if self.paused:
-                if k == pygame.K_ESCAPE:
-                    self.paused = False
-                    if self.music_on:
-                        pygame.mixer.music.unpause()
-                elif k == pygame.K_q:
-                    return False
-                return True
+            if menu_open:
+                return self.menu_key(k)
+            # tutorial: TAB skips it, ENTER / E continues on the "read this" steps
+            if self.tut.active and self.scene == "village":
+                if k == pygame.K_TAB:
+                    self.tut.skip(self)
+                    return True
+                if (k in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_e) and self.tut.on_info()
+                        and not self.dialogue.active and not self.show_map):
+                    self.tut.next(self)
+                    self.play("blip")
+                    return True
             if k == pygame.K_ESCAPE:
                 if self.scene == "dungeon":
-                    return True
-                if self.show_map:
+                    # not while Grimhorn is speaking or the victory screen is up
+                    if not self.dialogue.active and not self.combat.victory_active:
+                        self.open_pause()
+                elif self.show_map:
                     self.show_map = False
+                    self.tut.notify(self, "map_close")
                 elif self.dialogue.active:
                     self.dialogue.active = False
                     for n in self.npcs:
                         n.talking = False
                 else:
-                    self.paused = True
-                    if self.music_on:
-                        pygame.mixer.music.pause()
+                    self.open_pause()
             elif k == pygame.K_b:
-                self.music_on = not self.music_on
-                if self.music_on:
-                    pygame.mixer.music.unpause()
-                else:
-                    pygame.mixer.music.pause()
-                self.toast("Music on" if self.music_on else "Music off", 1.5)
+                self.toggle_music()
             elif k == pygame.K_SPACE and not self.show_map:
                 if self.dialogue.active:
                     self.dialogue.advance()
@@ -923,9 +1098,11 @@ class Game:
                     self.combat.dodge(pygame.key.get_pressed())
                 elif self.player.jump():
                     self.play("jump")
+                    self.tut.notify(self, "jump")
             elif k == pygame.K_m:
                 if self.scene == "village":
                     self.show_map = not self.show_map
+                    self.tut.notify(self, "map_open" if self.show_map else "map_close")
             elif k == pygame.K_h:
                 self.help_t = 0 if self.help_t > 0 else 12
             elif k == pygame.K_n and not self.dialogue.active and self.scene == "village":
@@ -941,6 +1118,7 @@ class Game:
         return True
 
     def run(self, frames=None):
+        """Main loop. Returns "restart" if the player chose New Game mid-session, else "quit"."""
         running = True
         n = 0
         while running:
@@ -953,7 +1131,8 @@ class Game:
             n += 1
             if frames and n >= frames:
                 break
-        pygame.quit()
+        pygame.mouse.set_visible(True)
+        return "restart" if self.restart else "quit"
 
 
 def main():
@@ -966,10 +1145,16 @@ def main():
     if args.regen_assets:
         import generate_assets
         generate_assets.main()
-    game = Game(seed=args.seed, skip_title=args.skip_title or args.boss_test)
-    if args.boss_test:
-        game.debug_boss()
-    game.run()
+    begin_new = False
+    while True:
+        game = Game(seed=args.seed, skip_title=args.skip_title or args.boss_test, begin_new=begin_new)
+        if args.boss_test and not begin_new:
+            game.debug_boss()
+        if game.run() != "restart":
+            break
+        begin_new = True
+        args.skip_title = args.boss_test = False
+    pygame.quit()
 
 
 if __name__ == "__main__":
