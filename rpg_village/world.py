@@ -20,7 +20,7 @@ FOOT = {
     "lamp": (1, 1), "barrel": (1, 1), "crate": (1, 1), "hay": (1, 1), "sign": (1, 1),
     "board": (2, 1), "bench": (2, 1), "scarecrow": (1, 1), "anvil": (1, 1), "campfire": (1, 1),
     "fence_h": (1, 1), "fence_v": (1, 1), "well": (2, 1), "stall_red": (3, 2), "stall_blue": (3, 2),
-    "shrine": (3, 2), "tent": (3, 2), "goddess": (2, 1),
+    "shrine": (3, 2), "tent": (3, 2), "goddess": (5, 2),
 }
 
 HOUSES = [  # name, x0, y0, width, display name, door text
@@ -334,6 +334,7 @@ class World:
         self.lamps.append((46 * T + 16, 16 * T - 10))
         self.place("lamp", 50, 16)
         self.lamps.append((50 * T + 16, 16 * T - 10))
+        self.build_sanctuary()
         self.place("tent", 75, 32)
         self.interact.append(dict(rect=pygame.Rect(75 * T, 34 * T - 4, 96, 40), name="Hunter's Tent",
                                   text=["A canvas tent patched many times over. A fur blanket is rolled up inside."]))
@@ -350,6 +351,105 @@ class World:
         for (tx, ty) in ((24, 44), (35, 36), (33, 58), (63, 36), (70, 52), (66, 56)):
             self.place(rng.choice(("tree_oak", "tree_oak", "tree_autumn")), tx, ty)
         self.build_gate()
+
+    # ----------------------------------------------------------- sanctuary
+    def build_sanctuary(self):
+        """The Goddess Sanctuary: a lush flower garden behind the Whispering Shrine. A flagstone
+        apron leads up to the statue, two reflecting pools mirror her, cherry trees frame the wings.
+        Uses its own random stream so the rest of the world is generated exactly as before."""
+        rnd = random.Random(self.seed + 777)
+        SCX, SCY = 48.5, 12.0                                   # centre of the garden (tile units)
+
+        def lawn(x, y, k=1.0):
+            return ((x + 0.5 - SCX) / (11.5 * k)) ** 2 + ((y + 0.5 - SCY) / (9.5 * k)) ** 2
+
+        # 1. soft green lawn over whatever the noise made here (road stays); claim it so no wild trees grow
+        for y in range(2, 23):
+            for x in range(35, 63):
+                if not self.inb(x, y):
+                    continue
+                if lawn(x, y) <= 1.0 and self.terrain[y][x] not in (PATH, COBBLE):
+                    self.terrain[y][x] = GRASS
+                if lawn(x, y, 0.86) <= 1.0:
+                    self.occupied[y][x] = True
+        # 2. props that need free ground (place() refuses occupied tiles, so lift the claim for them)
+        def prop(kind, tx, ty, **kw):
+            fw, fh = FOOT[kind]
+            for yy in range(ty, ty + fh):
+                for xx in range(tx, tx + fw):
+                    if self.inb(xx, yy) and self.terrain[yy][xx] not in (WATER, DEEP):
+                        self.occupied[yy][xx] = False
+            return self.place(kind, tx, ty, **kw)
+
+        prop("goddess", 46, 8)
+        self.goddess = (46, 8)                                  # top-left tile of the statue's footprint (main.py uses it)
+        self.interact.append(dict(rect=pygame.Rect(45 * T, 10 * T - 8, 7 * T, 3 * T), id="goddess",
+                                  name="Goddess Statue", text=[]))
+        for kind, tx, ty in (("tree_cherry", 42, 4), ("tree_cherry", 44, 3), ("tree_cherry", 52, 3), ("tree_cherry", 54, 4),
+                             ("tree_oak", 39, 7), ("tree_oak", 58, 7), ("tree_cherry", 40, 10), ("tree_cherry", 57, 10),
+                             ("tree_cherry", 38, 14), ("tree_cherry", 59, 14), ("tree_oak", 40, 18), ("tree_oak", 57, 18),
+                             ("tree_cherry", 46, 3), ("tree_cherry", 50, 3),
+                             ("bush_berry", 43, 7), ("bush", 53, 7), ("bush", 44, 8), ("bush_berry", 52, 8),
+                             ("bush", 42, 17), ("bush_berry", 55, 17)):
+            prop(kind, tx, ty)
+        # 3. two small reflecting pools with a sandy rim, either side of the shrine
+        for pcx, pcy in ((41.0, 14.5), (56.0, 14.5)):
+            for y in range(int(pcy - 4), int(pcy + 5)):
+                for x in range(int(pcx - 5), int(pcx + 6)):
+                    if not self.inb(x, y) or self.occupied[y][x] and self.blocked[y][x]:
+                        continue
+                    d2 = ((x + 0.5 - pcx) / 1.9) ** 2 + ((y + 0.5 - pcy) / 1.6) ** 2
+                    if d2 <= 1.0:
+                        self.terrain[y][x] = WATER
+                        self.occupied[y][x] = True
+                    elif d2 <= 2.4 and self.terrain[y][x] in (GRASS, DARK):
+                        self.terrain[y][x] = SAND
+                        self.occupied[y][x] = True
+        # 4. flagstones: apron before the statue, two lanes round the shrine, a threshold onto the road
+        def cobble(x, y):
+            if self.inb(x, y) and self.terrain[y][x] not in (WATER, DEEP, DOCK) and not self.blocked[y][x]:
+                self.terrain[y][x] = COBBLE
+                self.occupied[y][x] = True
+        for y in range(10, 13):
+            for x in range(41, 57):
+                if ((x + 0.5 - 48.5) / 6.6) ** 2 + ((y + 0.5 - 11.4) / 1.9) ** 2 <= 1.0:
+                    cobble(x, y)
+        for y in range(12, 18):                                  # one-tile lanes either side of the shrine
+            for x in (45, 52):
+                cobble(x, y)
+        for x in range(45, 53):                                  # threshold in front of the shrine
+            cobble(x, 17)
+        for y in (18, 19):
+            for x in (48, 49):
+                cobble(x, y)
+        # 5. lamps: along the apron and the lanes (they also glow at night)
+        for lx, ly in ((43, 10), (54, 10), (44, 14), (53, 14), (46, 18), (51, 18)):
+            if self.inb(lx, ly) and not self.blocked[ly][lx]:
+                self.place("lamp", lx, ly, force=True)
+                self.lamps.append((lx * T + 16, ly * T - 10))
+        for bx, by in ((43, 12), (54, 12)):                     # benches on the apron, facing the statue
+            self.place("bench", bx, by, force=True) if not self.blocked[by][bx] and not self.blocked[by][bx + 1] else None
+        # 6. flowers everywhere: angel colours (blue / white / pink) with a little yellow
+        mix = ("blue", "white", "pink", "blue", "white", "pink", "yellow", "purple")
+        for y in range(2, 23):
+            for x in range(35, 63):
+                if not self.inb(x, y) or self.terrain[y][x] != GRASS or self.blocked[y][x]:
+                    continue
+                e = lawn(x, y)
+                if e > 0.95:
+                    continue
+                near_stone = any(self.inb(x + dx, y + dy) and self.terrain[y + dy][x + dx] in (COBBLE, SAND, WATER)
+                                 for dx in (-1, 0, 1) for dy in (-1, 0, 1))
+                pf = 0.9 if near_stone else (0.60 if e < 0.7 else 0.30)
+                for _ in range(2 if near_stone else 1):
+                    if rnd.random() < pf:
+                        self.add_decor(f"flower_{rnd.choice(mix)}", x * T + rnd.randint(0, 14), y * T + rnd.randint(2, 16))
+                if rnd.random() < 0.25:
+                    self.add_decor(f"tuft_{rnd.randrange(3)}", x * T + rnd.randint(0, 16), y * T + rnd.randint(4, 20))
+        for y in range(2, 23):                                   # pebbles on the sandy pool rims
+            for x in range(35, 63):
+                if self.inb(x, y) and self.terrain[y][x] == SAND and rnd.random() < 0.18:
+                    self.add_decor("pebbles", x * T + rnd.randint(2, 18), y * T + rnd.randint(6, 20))
 
     # ---------------------------------------------------------------- gate
     def build_gate(self):
@@ -385,20 +485,7 @@ class World:
         # brazier light for the night pass
         for x in (46, 51):
             self.lamps.append((x * T + 16, 87 * T - 98))
-        # Goddess statue west of the forecourt: a small flagstone plaza joined to the gate courtyard.
-        for y in range(84, 88):
-            for x in range(40, 45):
-                if ((x + 0.5 - 42.5) / 2.9) ** 2 + ((y + 0.5 - 85.8) / 2.3) ** 2 <= 1.0 \
-                        and not self.occupied[y][x] and self.terrain[y][x] not in (WATER, DEEP, DOCK):
-                    self.terrain[y][x] = COBBLE
-                    self.occupied[y][x] = True
-        for x in (43, 44):                                   # little walkway into the forecourt
-            self.terrain[86][x] = COBBLE
-            self.occupied[86][x] = True
-        self.place("goddess", 41, 84, force=True)
-        self.goddess = (41, 84)                              # tile of the statue's left foot (used by main.py)
-        self.interact.append(dict(rect=pygame.Rect(40 * T, 82 * T, 4 * T, 5 * T), id="goddess",
-                                  name="Goddess Statue", text=[]))
+        # (the goddess statue now lives in the sanctuary behind the Whispering Shrine - see build_sanctuary)
         # E prompt: anywhere on the landing / just in front of it
         self.interact.append(dict(rect=pygame.Rect(46 * T, 85 * T, 6 * T, 4 * T), id="dungeon", name="The Hollow Below",
                                   text=["A stone stairwell sinks into the dark."]))

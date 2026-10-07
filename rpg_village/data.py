@@ -121,7 +121,8 @@ PLACES = [
     ("Gil's Farm", (21, 61, 37, 75)),
     ("Reedwater Pond", (59, 58, 77, 74)),
     ("Hunter's Camp", (72, 30, 86, 43)),
-    ("Whispering Shrine", (41, 10, 56, 22)),
+    ("Goddess Sanctuary", (38, 3, 59, 13)),
+    ("Whispering Shrine", (41, 13, 56, 22)),
     ("Moonlake", (68, 6, 92, 30)),
     ("The Hollow Gate", (43, 82, 54, 93)),
 ]

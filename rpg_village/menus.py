@@ -198,8 +198,8 @@ def draw_controls(g, v):
         y = y0 + 22 + i * 20
         g.text_shadow(v, g.font, k, (x1, y), GOLD, SHADOW)
         g.text_shadow(v, g.font, d, (x1 + 132, y), CREAM, SHADOW)
-    tips = ["Fireballs cost 5 MP and every kill returns a little. The goddess statue outside the "
-            "dungeon gate refills your HP and MP.",
+    tips = ["Fireballs cost 5 MP and every kill returns a little. The goddess statue in the north sanctuary, "
+            "behind the Whispering Shrine, refills your HP and MP.",
             "On floor 5, the purple gate leads to the final boss."]
     ty = y0 + 22 + len(CONTROLS_DUNGEON) * 20 + 10
     for tip in tips:
@@ -207,7 +207,7 @@ def draw_controls(g, v):
             g.text_shadow(v, g.font_s, ln, (x1, ty), DIM, SHADOW)
             ty += 14
         ty += 4
-    g.text_shadow(v, g.font_s, "Press ESC or ENTER to go back", (cx, rect.bottom - 20), DIM, SHADOW, True)
+    g.text_shadow(v, g.font_s, "F5: quick save (current slot)   -   F9: load latest   -   ESC or ENTER: back", (cx, rect.bottom - 20), DIM, SHADOW, True)
 
 
 def draw_pause(g, v):
@@ -217,6 +217,56 @@ def draw_pause(g, v):
     _ornament(v, cx, 96, 100)
     g.menu_pause.draw(g, v, g.t)
     g.text_shadow(v, g.font_s, "ESC: resume", (cx, VIEW_H - 22), DIM, SHADOW, True)
+
+
+def _hour_text(t):
+    try:
+        h = int(float(t)) % 24
+        m = int((float(t) - int(float(t))) * 60)
+        return "%02d:%02d" % (h, m)
+    except (TypeError, ValueError):
+        return "--:--"
+
+
+def draw_slots(g, v):
+    """Save / load slot list (5 manual slots, plus the autosave when loading)."""
+    import time as _time
+    import save as SAVE
+    _dim(v, 185)
+    cx = VIEW_W // 2
+    saving = g.slot_mode == "save"
+    g.text_shadow(v, g.font_b, "SAVE GAME" if saving else "LOAD GAME", (cx, 12), GOLD, (70, 36, 24), True)
+    _ornament(v, cx, 52, 110)
+    for i, sid in enumerate(g.slot_ids):
+        r = g.slot_row_rect(i)
+        on = i == g.slot_sel
+        info = g.slot_info.get(sid)
+        s = pygame.Surface(r.size, pygame.SRCALPHA)
+        pygame.draw.rect(s, (66, 38, 30, 230) if on else (32, 22, 26, 175), s.get_rect(), border_radius=8)
+        pygame.draw.rect(s, (255, 214, 120, 255) if on else (150, 120, 90, 150), s.get_rect(), 2 if on else 1,
+                         border_radius=8)
+        v.blit(s, r.topleft)
+        name = "Autosave" if sid == SAVE.AUTO else "Slot %d" % sid
+        g.text_shadow(v, g.font_m, name, (r.x + 12, r.y + 4), GOLD if on else (220, 200, 160), SHADOW)
+        if info is None:
+            g.text_shadow(v, g.font, "- empty -", (r.x + 112, r.y + 10), DIM, SHADOW)
+        elif info.get("broken"):
+            g.text_shadow(v, g.font, "unreadable save file", (r.x + 112, r.y + 10), (230, 140, 120), SHADOW)
+        else:
+            place = info["meta"].get("place") or ("The Hollow Below" if info.get("scene") == "dungeon"
+                                                  else "Hearthmoor Village")
+            g.text_shadow(v, g.font, place, (r.x + 112, r.y + 4), CREAM, SHADOW)
+            stats = "HP %s/%s   Kills %s   %s%s" % (info.get("hp"), info.get("max_hp"), info.get("kills"),
+                                                  _hour_text(info.get("time")),
+                                                  "   Boss slain" if info.get("boss") else "")
+            g.text_shadow(v, g.font_s, stats, (r.x + 112, r.y + 21), DIM, SHADOW)
+            ts = _time.strftime("%d %b %Y  %H:%M", _time.localtime(info.get("saved_at", 0)))
+            g.text_shadow(v, g.font_s, ts, (r.right - 12 - g.font_s.size(ts)[0], r.y + 21), (170, 160, 140), SHADOW)
+        if on and g.slot_confirm and g.slot_confirm[1] == sid:
+            msg = "ENTER again: overwrite" if g.slot_confirm[0] == "overwrite" else "DEL again: delete"
+            g.text_shadow(v, g.font_s, msg, (r.right - 12 - g.font_s.size(msg)[0], r.y + 5), (255, 170, 130), SHADOW)
+    hint = "W/S: choose   ENTER: %s   DEL: delete   ESC: back" % ("save" if saving else "load")
+    g.text_shadow(v, g.font_s, hint, (cx, VIEW_H - 22), DIM, SHADOW, True)
 
 
 # ------------------------------------------------------------------------------ tutorial
@@ -269,7 +319,7 @@ class Tutorial:
                   "WHEEL to swap sword and fireball, and SPACE to dodge roll. Rolling makes you invincible."),
         dict(id="mana", title="Mana, Items & the Goddess", info=True,
              text="Fireballs cost 5 MP; kills restore a little. Press I for your inventory, 1 / 2 to drink "
-                  "potions. The goddess statue by the gate restores HP and MP."),
+                  "potions. The goddess statue in the north sanctuary (behind the Whispering Shrine) restores HP and MP."),
         dict(id="done", title="You're ready!", info=True,
              text="Good luck, traveler. You can replay this tutorial from the pause menu any time."),
     ]

@@ -1,85 +1,56 @@
-"""Draws the goddess statue sprite -> assets/objects/goddess.png (64x96, bottom-anchored like the other objects).
-Run:  python tools/make_goddess.py      (replace the PNG with your own art any time)"""
+"""Builds the goddess statue sprite -> assets/objects/goddess.png from your own artwork.
+
+Source art : assets/objects/_source/goddess_original.png   (the pixel-art angel shrine, 1024x1536)
+Output     : assets/objects/goddess.png                      (128x192 = 4x6 tiles, bottom-anchored like the other objects)
+
+Run:  python tools/make_goddess.py        (needs Pillow + numpy:  pip install pillow numpy)
+To use different art later, overwrite goddess_original.png and run this again.
+If you change OUT_W / OUT_H, also update ORB_Y in main.py (statue_orb) and FOOT["goddess"] in world.py.
+"""
 import os
-import pygame
+import numpy as np
+from PIL import Image, ImageFilter
 
-W, H = 64, 96
-OUT = os.path.join(os.path.dirname(__file__), "..", "assets", "objects", "goddess.png")
-
-
-def outline(img, col=(34, 30, 52)):
-    m = pygame.mask.from_surface(img, 40)
-    out = pygame.Surface(img.get_size(), pygame.SRCALPHA)
-    for (dx, dy) in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-        out.blit(m.to_surface(setcolor=col + (255,), unsetcolor=(0, 0, 0, 0)), (dx, dy))
-    out.blit(img, (0, 0))
-    return out
-
-
-def poly(s, col, pts):
-    pygame.draw.polygon(s, col, pts)
+HERE = os.path.dirname(__file__)
+SRC = os.path.join(HERE, "..", "assets", "objects", "_source", "goddess_original.png")
+OUT = os.path.join(HERE, "..", "assets", "objects", "goddess.png")
+OUT_W = 128
+OUTLINE = (34, 30, 52, 255)          # same dark outline colour as the other props
 
 
 def make():
-    s = pygame.Surface((W, H), pygame.SRCALPHA)
-    cx = 32
-    # ---- wings (behind)
-    for sgn in (-1, 1):
-        def X(x):
-            return cx + sgn * x
-        poly(s, (214, 224, 244), [(X(5), 36), (X(22), 20), (X(27), 14), (X(26), 28), (X(20), 44), (X(10), 52)])
-        poly(s, (244, 248, 255), [(X(7), 36), (X(21), 23), (X(25), 18), (X(24), 30), (X(18), 42), (X(10), 48)])
-        for i, (a, b) in enumerate(((27, 30), (22, 40), (16, 48))):
-            pygame.draw.line(s, (176, 192, 226), (X(7 + i * 2), 36 + i * 2), (X(a - 4), b - 14), 1)
-    # ---- pedestal
-    pygame.draw.rect(s, (112, 116, 132), (8, 84, 48, 12))
-    pygame.draw.rect(s, (150, 154, 170), (8, 84, 48, 3))
-    pygame.draw.rect(s, (96, 100, 116), (12, 76, 40, 9))
-    pygame.draw.rect(s, (140, 144, 160), (12, 76, 40, 2))
-    pygame.draw.rect(s, (158, 162, 178), (17, 62, 30, 15))
-    pygame.draw.rect(s, (196, 200, 214), (17, 62, 30, 2))
-    pygame.draw.rect(s, (122, 126, 144), (17, 74, 30, 3))
-    # rune on the plinth
-    for pts in (((32, 66), (32, 73)), ((29, 68), (35, 68)), ((29, 72), (32, 69)), ((35, 72), (32, 69))):
-        pygame.draw.line(s, (120, 200, 255), pts[0], pts[1], 1)
-    # moss
-    for x, y in ((9, 90), (11, 92), (50, 88), (53, 91), (14, 80), (46, 79)):
-        s.set_at((x, y), (98, 150, 90))
-        s.set_at((x + 1, y), (84, 132, 78))
-    # ---- robe
-    poly(s, (160, 174, 212), [(25, 33), (39, 33), (47, 62), (17, 62)])
-    poly(s, (236, 240, 250), [(26, 33), (38, 33), (45, 62), (19, 62)])
-    poly(s, (206, 216, 238), [(31, 36), (33, 36), (36, 62), (28, 62)])
-    for x0, x1 in ((22, 21), (27, 26), (37, 38), (42, 43)):
-        pygame.draw.line(s, (178, 192, 224), (x0, 46), (x1, 62), 1)
-    # sash + gold hem
-    pygame.draw.rect(s, (236, 190, 84), (26, 44, 12, 3))
-    pygame.draw.rect(s, (200, 150, 54), (26, 46, 12, 1))
-    pygame.draw.rect(s, (236, 190, 84), (19, 60, 26, 2))
-    # ---- arms + orb
-    poly(s, (226, 232, 246), [(25, 34), (28, 36), (30, 49), (27, 50), (24, 42)])
-    poly(s, (226, 232, 246), [(39, 34), (36, 36), (34, 49), (37, 50), (40, 42)])
-    pygame.draw.circle(s, (244, 222, 200), (30, 50), 2)
-    pygame.draw.circle(s, (244, 222, 200), (34, 50), 2)
-    pygame.draw.circle(s, (90, 160, 240), (32, 47), 5)
-    pygame.draw.circle(s, (170, 220, 255), (32, 47), 4)
-    pygame.draw.circle(s, (255, 255, 255), (31, 46), 2)
-    # ---- hair (back), head, hair (front)
-    poly(s, (226, 180, 96), [(25, 22), (39, 22), (41, 40), (36, 44), (28, 44), (23, 40)])
-    pygame.draw.circle(s, (244, 222, 200), (32, 26), 6)
-    poly(s, (240, 200, 116), [(25, 25), (26, 19), (32, 17), (38, 19), (39, 25), (36, 21), (32, 21), (28, 21)])
-    pygame.draw.line(s, (60, 50, 80), (30, 27), (30, 27))
-    pygame.draw.line(s, (60, 50, 80), (34, 27), (34, 27))
-    s.set_at((32, 30), (214, 150, 140))
-    # ---- halo
-    pygame.draw.ellipse(s, (255, 226, 130), (23, 8, 18, 7), 2)
-    pygame.draw.ellipse(s, (255, 248, 200), (25, 9, 14, 5), 1)
-    return outline(s)
+    im = Image.open(SRC).convert("RGBA")
+    a = np.array(im)
+    a[:, :, 3] = np.where(a[:, :, 3] < 60, 0, a[:, :, 3])        # kill the faint background haze
+    im = Image.fromarray(a)
+    bbox = im.getchannel("A").point(lambda v: 255 if v > 0 else 0).getbbox()
+    im = im.crop(bbox)
+    h = round(im.height * OUT_W / im.width)
+    # alpha-aware resize (premultiplied) so edges don't get a white fringe
+    arr = np.array(im).astype(np.float32)
+    arr[:, :, :3] *= arr[:, :, 3:4] / 255.0
+    pm = Image.fromarray(arr.astype(np.uint8), "RGBA").resize((OUT_W, h), Image.LANCZOS)
+    arr = np.array(pm).astype(np.float32)
+    al = arr[:, :, 3:4]
+    arr[:, :, :3] = np.where(al > 0, arr[:, :, :3] * 255.0 / np.maximum(al, 1), 0)
+    arr[:, :, 3] = np.where(arr[:, :, 3] < 110, 0, 255)           # hard pixel-art edge
+    spr = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGBA")
+    spr = spr.filter(ImageFilter.UnsharpMask(radius=1, percent=60, threshold=2))
+    # 1px outline
+    m = np.array(spr)[:, :, 3] > 0
+    pad = np.pad(m, 1)
+    edge = np.zeros_like(pad)
+    for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        edge |= np.roll(np.roll(pad, dy, 0), dx, 1)
+    edge &= ~pad
+    out = Image.new("RGBA", (OUT_W + 2, h + 2), (0, 0, 0, 0))
+    ol = np.zeros((h + 2, OUT_W + 2, 4), np.uint8)
+    ol[edge] = OUTLINE
+    out = Image.alpha_composite(Image.fromarray(ol, "RGBA"), Image.new("RGBA", out.size, (0, 0, 0, 0)))
+    out.alpha_composite(spr, (1, 1))
+    out.save(OUT)
+    print("saved", OUT, out.size)
 
 
 if __name__ == "__main__":
-    pygame.init()
-    pygame.display.set_mode((1, 1))
-    img = make()
-    pygame.image.save(img, OUT)
-    print("wrote", os.path.abspath(OUT))
+    make()

@@ -9,11 +9,11 @@ OFFER = [
     "Before you go wandering off, traveler... I must ask something of you. It is grave.",
     "Beneath the south road lies the Hollow Below, five floors of stone and shadow. A creature called Grimhorn, the Warden, sits on a throne at its very bottom.",
     "Since he woke, the Hollow has been spilling its monsters closer to our fields every season. Someone must end it.",
-    "QUEST: Descend into the Hollow Below, clear the floors, and defeat Grimhorn. Rest at the goddess statue by the gate whenever you are hurt.",
+    "QUEST: Descend into the Hollow Below, clear the floors, and defeat Grimhorn. Rest at the goddess statue in the sanctuary behind the Whispering Shrine whenever you are hurt.",
 ]
 REMINDER = [
     "Grimhorn still sits upon his throne, deep in the Hollow Below. The south road ends at the gate.",
-    "Clear all five floors, then step to the purple gate on the last one. Rest at the goddess statue if you need strength.",
+    "Clear all five floors, then step to the purple gate on the last one. Rest at the goddess statue up north if you need strength.",
 ]
 THANKS = [
     "You... you've done it? The Hollow has gone quiet. I can feel it from here!",

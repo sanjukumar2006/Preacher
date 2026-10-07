@@ -41,7 +41,7 @@ FIRE = (255, 140, 50)       # fireball colour
 CHEST = 14                  # px between a character's feet and its chest (hit / aim centre)
 
 SWORD = dict(damage=14, cooldown=0.36, duration=0.20, reach=46, arc=135.0, knock=260.0, lunge=95.0)
-MAGIC = dict(damage=25, cooldown=0.42, duration=0.16, speed=300.0, radius=5, knock=120.0, life=1.15)
+MAGIC = dict(damage=9, cooldown=0.42, duration=0.16, speed=300.0, radius=5, knock=120.0, life=1.15)
 ROLL = dict(duration=0.30, speed=240.0, iframes=0.36, cooldown=0.70)
 
 BLOCKING = (WALL, WATER, LAVA, PILLAR)     # stops walking
@@ -459,6 +459,9 @@ class Combat:
         self.intro_started = False
         self.boss_tries = 0
         self.on_victory = lambda: None
+        self.on_floor_cleared = lambda: None  # main.py autosaves here
+        self.cleared_floors = set()           # floors 1-5 stay cleared for good (monsters do not come back)
+        self.dying = False                    # set when HP hits 0; main.py plays the death scene + respawn
         self.reset_player_state()
         self.clear_level_state()
         dungeon.on_level = self.load_level
@@ -505,6 +508,10 @@ class Combat:
         if level == 6:                                       # throne room: no wandering monsters, just the Warden
             self.total = 0
             self.spawn_throne_boss()
+            return
+        if level in self.cleared_floors:                     # already cleared: stays empty
+            self.total = 0
+            self.cleared = True
             return
         melee_pool, mage_pool = FLOOR_POOLS[level]
         rng = random.Random(level * 977 + 13)
@@ -754,12 +761,10 @@ class Combat:
         self.burst(p.x, p.y - CHEST, (255, 70, 70), 10, 110, .4)
         self.sfx.play("hurt")
         self.shake(3, 0.2)
-        if self.hp <= 0:                                   # only reachable when INFINITE_HP is False / boss fight
-            if self.boss_lock:
-                self.reset_boss_fight()
-                return True
-            self.hp = self.max_hp
-            self.toast("You were knocked out - health restored", 3)
+        if self.hp <= 0 and not self.dying:                # the hero dies: main.py takes over (death scene -> goddess statue)
+            self.dying = True
+            self.hp = 0
+            self.invuln = 999.0
         return True
 
     # ------------------------------------------------------------------ player actions
@@ -962,6 +967,9 @@ class Combat:
         self.enemies = [e for e in self.enemies if not (e.state == "dead" and e.dead_t > 0.6)]
         if self.total and not self.cleared and self.alive_count() == 0:
             self.cleared = True
+            if self.dungeon.level < 6:
+                self.cleared_floors.add(self.dungeon.level)
+                self.on_floor_cleared()
             if self.dungeon.level == 5 and not self.boss_defeated:
                 self.toast("Floor cleared! The purple gate hums... step up to it and press E.", 5.0)
             elif self.dungeon.level == 5:

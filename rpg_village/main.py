@@ -42,9 +42,10 @@ from world import FOOT, HOUSES, T, Baked, World
 from dungeon import Dungeon
 from combat import Combat
 import quest as Q
+import save as SAVE
 from inventory import QUICK_ITEMS, draw_inventory, inv_click, inv_key
 import gate
-from menus import (MenuList, Tutorial, draw_ask, draw_controls, draw_pause, draw_title_screen, make_motes)
+from menus import (MenuList, Tutorial, draw_ask, draw_controls, draw_pause, draw_slots, draw_title_screen, make_motes)
 
 VIEW_W, VIEW_H = 640, 360
 
@@ -152,6 +153,7 @@ class Game:
 
         self.dialogue = Dialogue(self.font, self.a["ui"]["dialog_box"], self.a["ui"]["name_tag"],
                                  self.a["ui"]["next_arrow"])
+        self.combat.on_floor_cleared = lambda: self.save_game(auto=True)
         self.cam = [0.0, 0.0]
         self.center_camera(True)
         self.time = 9.0           # hour of the day
@@ -166,12 +168,16 @@ class Game:
         self._last_mouse = None
         self.title_cam = list(self.cam)
         self.menu_main = self.menu_ask = self.menu_pause = None
+        self.current_slot = 1                               # slot used by quick save (F5)
+        self.slot_mode, self.slot_ids, self.slot_info = "load", [], {}
+        self.slot_sel, self.slot_confirm, self.slots_back = 0, None, "main"
         self.build_menus()
         self.t = 0.0
         self.show_map = False
         self.show_inv = False                       # inventory screen (key I)
         self.quest = Q.Quest()
         self.heal_t = 0.0                           # goddess blessing animation timer
+        self.death_t = 0.0                          # > 0 while the death scene plays
         self.holy = [radial(100, (int(70 * k), int(135 * k), int(210 * k)), 1.5) for k in (0.55, 0.75, 1.0)]
         self.paused = False
         self.help_t = 14.0
@@ -250,7 +256,7 @@ class Game:
                 continue
             m.fill(c, (p["tx"], p["ty"], fw, fh if not k.startswith("house") else 4))
         gx, gy = self.world.goddess
-        m.fill((150, 225, 255), (gx - 1, gy - 1, 4, 3))           # goddess statue
+        m.fill((150, 225, 255), (gx, gy - 1, 5, 3))               # goddess statue (sanctuary behind the shrine)
         m.fill((74, 66, 96), (46, 86, 6, 5))                     # the Hollow Gate
         m.fill((150, 80, 230), (47, 87, 4, 3))
         self.mini = m
@@ -266,7 +272,10 @@ class Game:
         main = []
         if self.started:
             main.append(("continue", "Continue"))
-        main += [("new", "New Game"), ("controls", "Controls"), ("music", self.music_label), ("quit", "Quit")]
+        main.append(("new", "New Game"))
+        if SAVE.any_exists():
+            main.append(("load", "Load Game"))
+        main += [("controls", "Controls"), ("music", self.music_label), ("quit", "Quit")]
         sel = self.menu_main.sel if self.menu_main else 0
         self.menu_main = MenuList(main, top=148, width=230)
         self.menu_main.sel = min(sel, len(main) - 1)
@@ -274,9 +283,10 @@ class Game:
             self.menu_ask = MenuList([("yes", "Yes, show me the basics"), ("no", "No thanks, let's go")],
                                      top=156, width=320)
         if self.menu_pause is None:
-            self.menu_pause = MenuList([("resume", "Resume"), ("inventory", "Inventory"), ("controls", "Controls"), ("music", self.music_label),
+            self.menu_pause = MenuList([("resume", "Resume"), ("save", "Save Game"), ("load", "Load Game"),
+                                        ("inventory", "Inventory"), ("controls", "Controls"), ("music", self.music_label),
                                         ("tutorial", "Replay Tutorial"), ("title", "Main Menu"),
-                                        ("quit", "Quit Game")], top=112, gap=29, width=230)
+                                        ("quit", "Quit Game")], top=104, gap=26, width=230)
 
     def current_menu(self):
         if self.state == "title":
@@ -338,6 +348,10 @@ class Game:
                 return False
             self.menu_screen = "tutorial_ask"
             self.menu_ask.sel = 0
+        elif key == "save":
+            self.open_slots("save")
+        elif key == "load":
+            self.open_slots("load")
         elif key == "controls":
             self.controls_back = self.menu_screen
             self.menu_screen = "controls"
@@ -367,8 +381,98 @@ class Game:
             self.menu_main.sel = 0
         return True
 
+    # ------------------------------------------------------------ save slots screen
+    def open_slots(self, mode):
+        """Show the slot list. mode = 'save' or 'load'."""
+        self.slots_back = self.menu_screen
+        self.slot_mode = mode
+        self.slot_ids = SAVE.slot_ids(include_auto=(mode == "load"))
+        self.slot_info = {sid: SAVE.info(sid) for sid in self.slot_ids}
+        self.slot_confirm = None
+        cur = self.current_slot if self.current_slot in self.slot_ids else self.slot_ids[0]
+        self.slot_sel = self.slot_ids.index(cur)
+        self.menu_screen = "slots"
+
+    def slot_row_rect(self, i):
+        return pygame.Rect(70, 62 + i * 41, 500, 37)
+
+    def slots_close(self):
+        self.menu_screen = self.slots_back
+        self.slot_confirm = None
+
+    def slots_activate(self):
+        sid = self.slot_ids[self.slot_sel]
+        info = self.slot_info.get(sid)
+        if self.slot_mode == "save":
+            if info and self.slot_confirm != ("overwrite", sid):
+                self.slot_confirm = ("overwrite", sid)
+                self.toast("Press ENTER again to overwrite slot %s" % sid, 2.0)
+                return
+            if self.scene == "dungeon" and self.dungeon.level == 6 and not self.combat.boss_defeated:
+                self.toast("Saves in the throne room return you to floor 5.", 3.0)
+            if self.save_game(slot=sid):
+                self.slots_close()
+                self.resume()
+        else:
+            if not info:
+                self.toast("That slot is empty.", 1.8)
+                return
+            if self.load_game(sid):
+                self.paused = False
+
+    def slots_delete(self):
+        sid = self.slot_ids[self.slot_sel]
+        if sid == SAVE.AUTO or not self.slot_info.get(sid):
+            return
+        if self.slot_confirm != ("delete", sid):
+            self.slot_confirm = ("delete", sid)
+            self.toast("Press DEL again to delete slot %s" % sid, 2.0)
+            return
+        SAVE.delete(sid)
+        self.slot_info[sid] = None
+        self.slot_confirm = None
+        if self.current_slot == sid:
+            self.current_slot = 1
+        self.build_menus()
+        self.toast("Slot %s deleted" % sid, 1.8)
+
+    def slots_key(self, k):
+        n = len(self.slot_ids)
+        if k in (pygame.K_UP, pygame.K_w):
+            self.slot_sel = (self.slot_sel - 1) % n
+            self.slot_confirm = None
+            self.play("blip")
+        elif k in (pygame.K_DOWN, pygame.K_s):
+            self.slot_sel = (self.slot_sel + 1) % n
+            self.slot_confirm = None
+            self.play("blip")
+        elif k in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE, pygame.K_e):
+            self.slots_activate()
+        elif k in (pygame.K_DELETE, pygame.K_x):
+            self.slots_delete()
+        elif k in (pygame.K_ESCAPE, pygame.K_BACKSPACE):
+            self.slots_close()
+            self.play("blip")
+        elif pygame.K_1 <= k <= pygame.K_9 and (k - pygame.K_0) in self.slot_ids:
+            self.slot_sel = self.slot_ids.index(k - pygame.K_0)
+            self.slot_confirm = None
+        return True
+
+    def slots_mouse(self, pos):
+        for i in range(len(self.slot_ids)):
+            if self.slot_row_rect(i).collidepoint(pos):
+                if self.slot_sel != i:
+                    self.slot_confirm = None
+                self.slot_sel = i
+                self.slots_activate()
+                return
+        if pygame.Rect(0, VIEW_H - 40, VIEW_W, 40).collidepoint(pos):
+            self.slots_close()
+
     def menu_key(self, k):
         scr = self.menu_screen
+        if scr == "slots":
+            return self.slots_key(k)
         if scr == "controls":
             if k in (pygame.K_ESCAPE, pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE, pygame.K_e,
                      pygame.K_BACKSPACE):
@@ -473,6 +577,7 @@ class Game:
         self.banner_text = "Hearthmoor Village"
         self.banner_t = 3.2
         self.play_music("hearth_and_willow.mp3", fade_ms=1200)
+        self.save_game(auto=True)
 
     def change_dungeon_level(self, direction):
         if self.scene != "dungeon":
@@ -527,7 +632,6 @@ class Game:
         if self.combat.boss_defeated:
             self.toast("The gate is dormant. The Warden is gone.", 3.0)
             return
-        self.combat.boss_tries = 0
         self.dungeon.set_level(6, spawn="gate")
         self.player.x, self.player.y = self.dungeon.player_spawn()
         self.player.dir = "up"
@@ -675,6 +779,7 @@ class Game:
         self.quest.state = "active"
         self.quest.show_hud()
         self.toast("New quest: " + Q.TITLE + "  (see Inventory: I)", 5.0)
+        self.save_game(auto=True)
 
     def finish_quest(self):
         c = self.combat
@@ -687,6 +792,177 @@ class Game:
         c.inv.add("mana_potion", Q.REWARD["mana_potion"])
         self.play("talk")
         self.toast("Quest complete: " + Q.TITLE, 6.0)
+        self.save_game(auto=True)
+
+
+    # ------------------------------------------------------------ save / load / death
+    def collect_save(self):
+        c = self.combat
+        lvl = self.dungeon.level
+        scene = self.scene
+        spawn = None
+        if scene == "dungeon":
+            if lvl == 6:                                   # throne room: after the fight you go home, before it you wait on floor 5
+                if c.boss_defeated:
+                    scene = "village"
+                else:
+                    lvl = 5
+            spawn = "entrance" if lvl == 1 else "down"
+        if scene == "village" and self.scene == "dungeon":
+            px, py = self.village_return_pos or (48 * T + 16, 84 * T + 24)
+            pdir = "down"
+        elif scene == "village":
+            px, py, pdir = self.player.x, self.player.y, self.player.dir
+        else:
+            px = py = 0
+            pdir = "up"
+        return dict(
+            scene=scene, level=lvl, spawn=spawn, x=px, y=py, dir=pdir, time=self.time,
+            quest=self.quest.state,
+            hp=c.hp, mp=c.mp, max_hp=c.max_hp, max_mp=c.max_mp, weapon=c.weapon, kills=c.kills,
+            boss_defeated=c.boss_defeated, boss_tries=c.boss_tries,
+            cleared_floors=sorted(c.cleared_floors),
+            inv=[list(s) if s else None for s in c.inv.slots], inv_sel=c.inv.sel,
+            talk={n.id: n.talk_count for n in self.npcs},
+            dungeon_hint=self.dungeon_hint,
+            meta=dict(place=("The Hollow Below - Floor %d" % lvl) if scene == "dungeon" else "Hearthmoor Village"),
+        )
+
+    def save_game(self, auto=False, slot=None):
+        """Write a save slot. auto=True is the quiet autosave (floor cleared, quest changes, ...) and goes to
+        the autosave slot; otherwise slot defaults to the slot you last used."""
+        if not self.started or self.state != "play" or self.death_t > 0 or self.combat.dying:
+            return False
+        if slot is None:
+            slot = SAVE.AUTO if auto else self.current_slot
+        try:
+            SAVE.write(self.collect_save(), slot)
+        except OSError as ex:
+            print("Save failed:", ex)
+            self.toast("Could not save the game!", 3.0)
+            return False
+        if slot != SAVE.AUTO:
+            self.current_slot = slot
+        label = "(auto)" if slot == SAVE.AUTO else "to slot %s" % slot
+        self.toast("Game saved " + label, 1.8 if auto else 2.5)
+        if not auto:
+            self.play("blip")
+        self.build_menus()
+        return True
+
+    def load_game(self, slot=None):
+        if slot is None:                                   # quick load: the most recent save
+            slot = SAVE.latest()
+        data = SAVE.read(slot) if slot is not None else None
+        if not data:
+            self.toast("No saved game found.", 2.5)
+            return False
+        try:
+            self.apply_save(data)
+        except Exception as ex:                            # a broken / hand-edited file must never crash the game
+            print("Load failed:", ex)
+            self.toast("The save file could not be loaded.", 3.0)
+            return False
+        if slot != SAVE.AUTO:
+            self.current_slot = slot
+        return True
+
+    def apply_save(self, d):
+        c = self.combat
+        self.state = "play"
+        self.started = True
+        self.paused = False
+        self.show_inv = self.show_map = False
+        self.dialogue.active = False
+        self.tut.active = False
+        self.tele_t = self.death_t = 0.0
+        self.help_t = 0.0
+        self.toasts = []
+        self.time = float(d.get("time", 9.0))
+        self.quest.state = d.get("quest", "unknown")
+        self.quest.hud_t = 0.0
+        self.dungeon_hint = bool(d.get("dungeon_hint", False))
+        for n in self.npcs:
+            n.talk_count = int(d.get("talk", {}).get(n.id, 0))
+            n.talking = False
+        c.max_hp, c.max_mp = int(d["max_hp"]), int(d["max_mp"])
+        c.weapon = d.get("weapon", "sword")
+        c.kills = int(d.get("kills", 0))
+        c.boss_defeated = bool(d.get("boss_defeated", False))
+        c.boss_tries = int(d.get("boss_tries", 0))
+        c.cleared_floors = set(int(f) for f in d.get("cleared_floors", []))
+        c.victory = c.victory_done = False
+        c.dying = False
+        for i in range(len(c.inv.slots)):
+            s = d["inv"][i] if i < len(d["inv"]) else None
+            c.inv.slots[i] = [s[0], int(s[1])] if s else None
+        c.inv.sel = int(d.get("inv_sel", 0))
+        if d.get("scene") == "dungeon":
+            self.village_return_pos = (48 * T + 16, 84 * T + 24)
+            self.scene = "dungeon"
+            c.dungeon_active = True
+            self.dungeon.set_level(int(d["level"]), spawn=d.get("spawn") or "entrance")
+            self.player.x, self.player.y = self.dungeon.player_spawn()
+            self.player.dir = "up"
+            self.dungeon.cam = [max(0, self.player.x - VIEW_W / 2), max(0, self.player.y - VIEW_H / 2)]
+            self.banner_text = "The Hollow Below — Floor %d" % self.dungeon.level
+            self.play_music("dark.mp3", fade_ms=800)
+        else:
+            self.scene = "village"
+            c.dungeon_active = False
+            self.dungeon.set_level(1, spawn="entrance")
+            self.player.x, self.player.y = float(d["x"]), float(d["y"])
+            self.player.dir = d.get("dir", "down")
+            self.center_camera(True)
+            self.banner_text = "Hearthmoor Village"
+            self.play_music("hearth_and_willow.mp3", fade_ms=800)
+        c.hp, c.mp = min(int(d["hp"]), c.max_hp), min(int(d["mp"]), c.max_mp)
+        self.player.z = self.player.vz = 0.0
+        self.banner_t = 3.2
+        self.update_place(True)
+        self.build_menus()
+        if self.music_on:
+            pygame.mixer.music.unpause()
+        self.toast("Game loaded", 2.5)
+
+    def respawn_at_goddess(self):
+        """The hero fell. He wakes before the goddess statue in her sanctuary; cleared floors stay cleared."""
+        c = self.combat
+        if self.scene == "dungeon" and self.dungeon.level == 6 and not c.boss_defeated:
+            c.boss_tries += 1                              # Grimhorn remembers you
+        self.scene = "village"
+        c.dungeon_active = False
+        c.dying = False
+        self.dungeon.set_level(1, spawn="entrance")        # reloads floor 1 (cleared floors stay empty)
+        c.hp, c.mp = c.max_hp, c.max_mp
+        gx, gy = self.world.goddess
+        self.player.x, self.player.y = (gx + 2) * T + 16, (gy + 3) * T + 24      # on the flagstones, just in front of the statue
+        self.player.dir = "up"
+        self.player.z = self.player.vz = 0.0
+        self.tele_t = 0.0
+        self.death_t = 0.0
+        self.heal_t = 2.2
+        self.dialogue.active = False
+        self.center_camera(True)
+        self.banner_text = "Hearthmoor Village"
+        self.banner_t = 3.2
+        self.play_music("hearth_and_willow.mp3", fade_ms=1500)
+        self.toast("You awaken before the goddess statue...", 4.5)
+        self.save_game(auto=True)
+
+    def draw_death(self, v):
+        t = self.death_t
+        a = max(0, min(255, int(255 * t / 1.2)))
+        veil = pygame.Surface((VIEW_W, VIEW_H))
+        veil.fill((10, 0, 4))
+        veil.set_alpha(a)
+        v.blit(veil, (0, 0))
+        if t > 0.9:
+            k = min(1.0, (t - 0.9) / 0.8)
+            col = (int(200 * k), int(30 * k), int(40 * k))
+            self.text_shadow(v, self.font_b, "YOU DIED", (VIEW_W // 2, VIEW_H // 2 - 22), col, (0, 0, 0), True)
+            sub = (int(190 * k), int(180 * k), int(170 * k))
+            self.text_shadow(v, self.font, "The goddess calls you back...", (VIEW_W // 2, VIEW_H // 2 + 12), sub, (0, 0, 0), True)
 
     def draw_quest(self, v, x, y):
         """Quest tracker panel (top-left, under the other panels)."""
@@ -713,7 +989,7 @@ class Game:
             self.text_shadow(v, self.font_s, ln, (x + 8, y + 19 + i * 12), (236, 228, 214))
 
     def pray(self):
-        """Goddess statue by the dungeon gate: refills HP and MP (as often as you like)."""
+        """Goddess statue in the sanctuary behind the Whispering Shrine: refills HP and MP (as often as you like)."""
         c = self.combat
         if c.restore_all():
             self.heal_t = 2.2
@@ -742,6 +1018,10 @@ class Game:
                 m = self.current_menu()
                 if m:
                     m.hover(self.mouse_view())
+                elif self.menu_screen == "slots":
+                    for i in range(len(self.slot_ids)):
+                        if self.slot_row_rect(i).collidepoint(self.mouse_view()) and self.slot_sel != i:
+                            self.slot_sel, self.slot_confirm = i, None
         if self.state == "title":
             # slow camera drift over the village while the time of day rolls on
             self.time = (self.time + dt / 5.0) % 24.0
@@ -768,6 +1048,14 @@ class Game:
             self.player.anim = 0
             self.target = None
             self.dungeon.update(dt, self.player)
+            return
+        if self.scene == "dungeon" and (self.combat.dying or self.death_t > 0):
+            self.death_t += dt                                      # death scene: the world freezes, screen fades out
+            if self.death_t >= 3.2:
+                self.respawn_at_goddess()
+            for t in self.toasts:
+                t[1] -= dt
+            self.toasts = [t for t in self.toasts if t[1] > 0]
             return
         if self.scene == "dungeon":
             mx, my = self.mouse_view()
@@ -974,7 +1262,7 @@ class Game:
     def statue_orb(self, cam):
         """Screen position of the glowing orb in the goddess's hands."""
         gx, gy = self.world.goddess
-        return int((gx + 1) * T - cam[0]), int((gy + 1) * T + 4 - 96 + 47 - cam[1])
+        return int((gx + 2.5) * T - cam[0]), int((gy + 2) * T + 4 - 198 + 43 - cam[1])    # sprite is 198px tall, orb 43px from its top
 
     def draw_statue_fx(self, v, cam, orb):
         ox, oy = orb
@@ -1060,6 +1348,8 @@ class Game:
                 flash.fill((235, 215, 255))
                 flash.set_alpha(a)
                 v.blit(flash, (0, 0))
+            if self.death_t > 0:
+                self.draw_death(v)
             return
         # clock / progress
         hh, mm = int(self.time), int((self.time % 1) * 60) // 5 * 5
@@ -1128,7 +1418,7 @@ class Game:
             if nm == "The Hollow Gate":
                 self.draw_gate_marker(v, x + 49 * 3, y + 87 * 3)
                 continue
-            self.text_shadow(v, self.font_s, nm, (x + cx, y + cy - 4), center=True)
+            self.text_shadow(v, self.font_s, nm, (x + cx, y + cy - (18 if nm == "Goddess Sanctuary" else 4)), center=True)
         for n in self.npcs:
             if n.talk_count > 0:
                 pygame.draw.circle(v, (255, 226, 90), (x + int(n.x / T * 3), y + int(n.y / T * 3)), 3)
@@ -1137,7 +1427,7 @@ class Game:
         pygame.draw.circle(v, (255, 255, 255), (px_, py_), 5)
         pygame.draw.circle(v, (230, 40, 40), (px_, py_), 3)
         self.text_shadow(v, self.font_m, "Hearthmoor & the Whisperwood", (VIEW_W // 2, y - 28), center=True)
-        self.text_shadow(v, self.font_s, "Press M to close   -   yellow: villagers   -   purple: dungeon gate   -   light blue: goddess statue",
+        self.text_shadow(v, self.font_s, "Press M to close   -   yellow: villagers   -   purple: dungeon gate   -   light blue: goddess statue (north sanctuary)",
                          (VIEW_W // 2, y + h + 12), (210, 200, 180), center=True)
 
     def draw_gate_marker(self, v, mx, my):
@@ -1160,6 +1450,8 @@ class Game:
         if self.state == "title":
             if self.menu_screen == "controls":
                 draw_controls(self, v)
+            elif self.menu_screen == "slots":
+                draw_slots(self, v)
             elif self.menu_screen == "tutorial_ask":
                 draw_ask(self, v)
             else:
@@ -1173,6 +1465,8 @@ class Game:
             if self.paused:
                 if self.menu_screen == "controls":
                     draw_controls(self, v)
+                elif self.menu_screen == "slots":
+                    draw_slots(self, v)
                 else:
                     draw_pause(self, v)
         self.screen.blit(v, (0, 0)) if self.screen.get_size() == v.get_size() else \
@@ -1188,6 +1482,9 @@ class Game:
             if self.menu_screen == "controls":
                 self.menu_screen = self.controls_back
                 self.play("blip")
+                return True
+            if self.menu_screen == "slots":
+                self.slots_mouse(self.mouse_view())
                 return True
             m = self.current_menu()
             if m and m.hover(self.mouse_view()):
@@ -1210,6 +1507,12 @@ class Game:
             k = e.key
             if k == pygame.K_F11:
                 pygame.display.toggle_fullscreen()
+            if k == pygame.K_F5 and self.state == "play" and not self.paused:
+                self.save_game()                                # quick save
+                return True
+            if k == pygame.K_F9 and not self.paused:
+                self.load_game()                                # quick load
+                return True
             if menu_open:
                 return self.menu_key(k)
             if self.show_inv:                                  # inventory screen swallows the keyboard
