@@ -25,7 +25,7 @@ THANKS = [
 REWARD = dict(max_hp=20, max_mp=20, health_potion=3, mana_potion=3)
 
 
-HUD_SECONDS = 10.0          # how long the on-screen quest panel stays after the quest changes
+HUD_SECONDS = 5.0          # how long the on-screen quest panel stays after the quest changes
 
 
 class Quest:

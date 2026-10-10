@@ -174,6 +174,7 @@ class Game:
         self.build_menus()
         self.t = 0.0
         self.show_map = False
+        self.map_floor = 1                          # floor shown on the dungeon map (browse with arrows / A, D)
         self.show_inv = False                       # inventory screen (key I)
         self.quest = Q.Quest()
         self.heal_t = 0.0                           # goddess blessing animation timer
@@ -587,6 +588,10 @@ class Game:
             self.enter_throne_room()
             return
         if direction == "down" and old < self.dungeon.max_level:
+            if not self.combat.cleared:
+                self.toast("The stairs are sealed. Slay every monster on this floor first (%d left)."
+                           % self.combat.alive_count(), 3.0)
+                return
             new = old + 1
             self.dungeon.set_level(new, spawn="down")
             self.player.x, self.player.y = self.dungeon.player_spawn()
@@ -632,6 +637,11 @@ class Game:
         if self.combat.boss_defeated:
             self.toast("The gate is dormant. The Warden is gone.", 3.0)
             return
+        missing = [f for f in range(1, 5) if f not in self.combat.cleared_floors]
+        if missing:
+            self.toast("The gate rejects you. Floor %s still %s monsters. Clear every floor first."
+                       % (", ".join(map(str, missing)), "has" if len(missing) == 1 else "have"), 4.0)
+            return
         self.dungeon.set_level(6, spawn="gate")
         self.player.x, self.player.y = self.dungeon.player_spawn()
         self.player.dir = "up"
@@ -647,6 +657,7 @@ class Game:
         self.enter_dungeon()
         self.dungeon.set_level(5, spawn="down")
         self.combat.cleared = True
+        self.combat.cleared_floors.update(range(1, 6))
         self.enter_throne_room()
 
     def mouse_view(self):
@@ -822,6 +833,7 @@ class Game:
             hp=c.hp, mp=c.mp, max_hp=c.max_hp, max_mp=c.max_mp, weapon=c.weapon, kills=c.kills,
             boss_defeated=c.boss_defeated, boss_tries=c.boss_tries,
             cleared_floors=sorted(c.cleared_floors),
+            dungeon_explored=self.dungeon.explored_to_save(),
             inv=[list(s) if s else None for s in c.inv.slots], inv_sel=c.inv.sel,
             talk={n.id: n.talk_count for n in self.npcs},
             dungeon_hint=self.dungeon_hint,
@@ -891,6 +903,8 @@ class Game:
         c.boss_defeated = bool(d.get("boss_defeated", False))
         c.boss_tries = int(d.get("boss_tries", 0))
         c.cleared_floors = set(int(f) for f in d.get("cleared_floors", []))
+        self.dungeon.load_explored(d.get("dungeon_explored"))
+        self.map_floor = 1
         c.victory = c.victory_done = False
         c.dying = False
         for i in range(len(c.inv.slots)):
@@ -1007,7 +1021,7 @@ class Game:
     def update(self, dt):
         self.t += dt
         keys = pygame.key.get_pressed()
-        hide = self.scene == "dungeon" and self.state == "play" and not self.paused and not self.show_inv
+        hide = self.scene == "dungeon" and self.state == "play" and not self.paused and not self.show_inv and not self.show_map
         if hide != self.mouse_hidden:                   # the dungeon draws its own crosshair
             self.mouse_hidden = hide
             pygame.mouse.set_visible(not hide)
@@ -1138,7 +1152,8 @@ class Game:
                     label = ("Enter the Purple Gate" if self.combat.cleared and not self.combat.boss_defeated
                              else ("Dormant gate" if self.combat.boss_defeated else "Sealed - slay all foes"))
                 elif direction == "down":
-                    label = "Descend"
+                    label = ("Descend" if self.combat.cleared
+                             else "Sealed - %d foes left" % self.combat.alive_count())
                 elif self.dungeon.level == 1:
                     label = "Return to Hearthmoor"
                 else:
@@ -1328,7 +1343,7 @@ class Game:
         if self.scene == "dungeon":
             self.panel(v, pygame.Rect(6, 6, 210, 46), 220)
             self.text_shadow(v, self.font_m, "THE HOLLOW BELOW", (14, 10), (220, 204, 238), (25, 18, 30))
-            hint = "Floor %d/5  •  E: stairs" % self.dungeon.level if self.dungeon.level < 6 else "Throne Room  •  defeat the Warden"
+            hint = "Floor %d/5  •  E: stairs  •  M: map" % self.dungeon.level if self.dungeon.level < 6 else "Throne Room  •  defeat the Warden"
             self.text_shadow(v, self.font_s, hint, (14, 30), (190, 180, 205))
             if self.banner_t > 0:
                 txt = self.font_m.render(self.banner_text, True, (235, 224, 246))
@@ -1430,6 +1445,154 @@ class Game:
         self.text_shadow(v, self.font_s, "Press M to close   -   yellow: villagers   -   purple: dungeon gate   -   light blue: goddess statue (north sanctuary)",
                          (VIEW_W // 2, y + h + 12), (210, 200, 180), center=True)
 
+    # ------------------------------------------------------------ dungeon map
+    def dungeon_map_floors(self):
+        """Floors the map can show: every explored floor, plus the one the hero is standing on."""
+        d = self.dungeon
+        return [f for f in range(1, 7) if d.explored[f] or f == d.level]
+
+    def browse_dungeon_map(self, step):
+        floors = self.dungeon_map_floors()
+        if self.map_floor not in floors:
+            self.map_floor = floors[0]
+        i = floors.index(self.map_floor) + step
+        if 0 <= i < len(floors):
+            self.map_floor = floors[i]
+            self.play("blip")
+
+    def draw_dungeon_map(self, v):
+        from dungeon import DW, DH, WALL, WATER, LAVA, PILLAR, FLOOR_NAMES
+        d, c = self.dungeon, self.combat
+        floors = self.dungeon_map_floors()
+        if self.map_floor not in floors:
+            self.map_floor = d.level
+        lv = self.map_floor
+        world = d.world_for(lv)
+        seen = d.explored[lv]
+        dim = pygame.Surface((VIEW_W, VIEW_H), pygame.SRCALPHA)
+        dim.fill((6, 4, 10, 215))
+        v.blit(dim, (0, 0))
+
+        sc = 11                                              # pixels per tile
+        mw, mh = DW * sc, DH * sc
+        mx, my = (VIEW_W - mw) // 2, 52
+        pygame.draw.rect(v, (12, 9, 18), (mx - 8, my - 8, mw + 16, mh + 16), border_radius=8)
+        pygame.draw.rect(v, (148, 122, 168), (mx - 8, my - 8, mw + 16, mh + 16), 1, border_radius=8)
+
+        # title + floor name
+        title = "THE HOLLOW BELOW" if lv < 6 else "THE WARDEN'S HALL"
+        self.text_shadow(v, self.font_m, title, (VIEW_W // 2, 6), (226, 210, 244), (25, 18, 30), True)
+        self.text_shadow(v, self.font_s,
+                         ("Floor %d/5 - %s" % (lv, FLOOR_NAMES[lv])) if lv < 6 else FLOOR_NAMES[6],
+                         (VIEW_W // 2, 22), (190, 180, 205), (25, 18, 30), True)
+
+        # floor tabs down the left side
+        tx0, ty0 = mx - 8 - 40, my
+        for i, f in enumerate(range(1, 7)):
+            if f == 6 and f not in floors:
+                continue
+            r = pygame.Rect(tx0, ty0 + i * 30, 32, 26)
+            have = f in floors
+            cleared = f in c.cleared_floors or (f == 6 and c.boss_defeated)
+            fill = (58, 44, 76) if f == lv else ((26, 20, 34) if have else (16, 12, 22))
+            pygame.draw.rect(v, fill, r, border_radius=5)
+            pygame.draw.rect(v, (226, 196, 255) if f == self.map_floor else (86, 72, 104), r, 2 if f == self.map_floor else 1,
+                             border_radius=5)
+            lab = self.font_m.render("T" if f == 6 else str(f), True, (235, 224, 246) if have else (84, 76, 96))
+            v.blit(lab, (r.x + 8, r.y + 5))
+            if cleared:
+                pygame.draw.circle(v, (120, 230, 130), (r.right - 6, r.y + 6), 3)
+            if f == d.level:
+                pygame.draw.circle(v, (255, 120, 120), (r.x + 5, r.bottom - 6), 2)
+
+        # the map itself
+        for y in range(DH):
+            for x in range(DW):
+                if (x, y) not in seen:
+                    continue
+                t = world.grid[y][x]
+                rect = (mx + x * sc, my + y * sc, sc, sc)
+                if t == WALL:
+                    pygame.draw.rect(v, (44, 38, 58), rect)
+                elif t == WATER:
+                    pygame.draw.rect(v, (46, 88, 150), rect)
+                elif t == LAVA:
+                    pygame.draw.rect(v, (206, 92, 30), rect)
+                elif t == PILLAR:
+                    pygame.draw.rect(v, (78, 72, 92), rect)
+                    pygame.draw.rect(v, (132, 124, 150), (rect[0] + 3, rect[1] + 3, sc - 6, sc - 6))
+                else:
+                    pygame.draw.rect(v, (86, 82, 108) if (x + y) % 2 else (80, 76, 102), rect)
+        # bright edge where a walkable tile meets a wall, so rooms read clearly
+        for y in range(1, DH - 1):
+            for x in range(1, DW - 1):
+                if (x, y) in seen and world.grid[y][x] == WALL:
+                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        if (x + dx, y + dy) in seen and world.grid[y + dy][x + dx] not in (WALL,):
+                            px, py = mx + x * sc, my + y * sc
+                            if dx == 1:
+                                pygame.draw.line(v, (170, 150, 200), (px + sc - 1, py), (px + sc - 1, py + sc - 1))
+                            elif dx == -1:
+                                pygame.draw.line(v, (170, 150, 200), (px, py), (px, py + sc - 1))
+                            elif dy == 1:
+                                pygame.draw.line(v, (170, 150, 200), (px, py + sc - 1), (px + sc - 1, py + sc - 1))
+                            else:
+                                pygame.draw.line(v, (170, 150, 200), (px, py), (px + sc - 1, py))
+
+        pulse = 0.5 + 0.5 * math.sin(self.t * 4)
+        floor_clear = (lv in c.cleared_floors) or (lv == d.level and c.cleared)
+
+        def marker(tile, kind):
+            x, y = tile
+            if (x, y) not in seen:
+                return
+            cx, cy = mx + x * sc + sc // 2, my + y * sc + sc // 2
+            if kind == "up":
+                pygame.draw.polygon(v, (230, 220, 245), [(cx, cy - 4), (cx - 4, cy + 3), (cx + 4, cy + 3)])
+            elif kind == "down":
+                col = (120, 230, 130) if floor_clear else (235, 80, 80)
+                pygame.draw.polygon(v, col, [(cx, cy + 4), (cx - 4, cy - 3), (cx + 4, cy - 3)])
+                pygame.draw.polygon(v, (20, 14, 24), [(cx, cy + 4), (cx - 4, cy - 3), (cx + 4, cy - 3)], 1)
+            elif kind == "altar":
+                pts = [(cx, cy - 5), (cx + 5, cy), (cx, cy + 5), (cx - 5, cy)]
+                pygame.draw.polygon(v, (170 + int(60 * pulse), 100, 240), pts)
+                pygame.draw.polygon(v, (240, 220, 255), pts, 1)
+            elif kind == "throne":
+                pygame.draw.rect(v, (200, 60, 70), (cx - 4, cy - 4, 8, 8))
+                pygame.draw.rect(v, (255, 210, 120), (cx - 4, cy - 4, 8, 8), 1)
+
+        if world.up:
+            marker(world.up, "up")
+        if world.down:
+            marker(world.down, "down")
+        if world.altar:
+            marker(world.altar, "altar")
+        if world.throne:
+            marker(world.throne, "throne")
+
+        # the hero
+        if lv == d.level:
+            px_, py_ = mx + int(self.player.x / T * sc), my + int((self.player.y - 4) / T * sc)
+            pygame.draw.circle(v, (255, 255, 255), (px_, py_), 5 + int(pulse * 2), 1)
+            pygame.draw.circle(v, (230, 40, 40), (px_, py_), 3)
+
+        # status lines + legend
+        if lv < 6:
+            if lv == d.level and not c.cleared:
+                st, col = "Foes left on this floor: %d" % c.alive_count(), (235, 190, 150)
+            elif floor_clear:
+                st, col = "Floor cleared", (150, 235, 160)
+            else:
+                st, col = "Not cleared - monsters still lurk here", (235, 190, 150)
+        else:
+            st, col = ("The Warden has fallen" if c.boss_defeated else "Defeat the Warden"), (235, 190, 150)
+        done = len([f for f in range(1, 6) if f in c.cleared_floors])
+        self.text_shadow(v, self.font_s, "%s     -     floors cleared: %d/5" % (st, done),
+                         (VIEW_W // 2, my + mh + 12), col, (25, 18, 30), True)
+        self.text_shadow(v, self.font_s,
+                         "A / D or arrows: switch floor   -   M / Esc: close   -   red stairs: sealed   green stairs: open",
+                         (VIEW_W // 2, my + mh + 26), (170, 160, 188), (25, 18, 30), True)
+
     def draw_gate_marker(self, v, mx, my):
         """Pulsing purple marker + label for the Hollow Gate on the big map."""
         pulse = 0.5 + 0.5 * math.sin(self.t * 3.5)
@@ -1459,7 +1622,7 @@ class Game:
         else:
             self.draw_ui(v)
             if self.show_map:
-                self.draw_map(v)
+                self.draw_dungeon_map(v) if self.scene == "dungeon" else self.draw_map(v)
             if self.show_inv:
                 draw_inventory(self, v)
             if self.paused:
@@ -1534,7 +1697,9 @@ class Game:
             if k == pygame.K_ESCAPE:
                 if self.scene == "dungeon":
                     # not while Grimhorn is speaking or the victory screen is up
-                    if not self.dialogue.active and not self.combat.victory_active:
+                    if self.show_map:
+                        self.show_map = False
+                    elif not self.dialogue.active and not self.combat.victory_active:
                         self.open_pause()
                 elif self.show_map:
                     self.show_map = False
@@ -1565,6 +1730,14 @@ class Game:
                 if self.scene == "village":
                     self.show_map = not self.show_map
                     self.tut.notify(self, "map_open" if self.show_map else "map_close")
+                elif (self.scene == "dungeon" and not self.dialogue.active and not self.combat.victory_active
+                      and not self.combat.dying and self.death_t <= 0 and not self.show_inv):
+                    self.show_map = not self.show_map
+                    self.map_floor = self.dungeon.level
+                    self.play("blip")
+            elif (k in (pygame.K_LEFT, pygame.K_RIGHT, pygame.K_a, pygame.K_d)
+                  and self.show_map and self.scene == "dungeon"):
+                self.browse_dungeon_map(-1 if k in (pygame.K_LEFT, pygame.K_a) else 1)
             elif k == pygame.K_h:
                 self.help_t = 0 if self.help_t > 0 else 12
             elif k == pygame.K_n and not self.dialogue.active and self.scene == "village":

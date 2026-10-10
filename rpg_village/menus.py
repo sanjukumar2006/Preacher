@@ -176,7 +176,7 @@ CONTROLS_VILLAGE = [("WASD / Arrows", "Move"), ("SHIFT", "Run (hold)"), ("SPACE"
                     ("B / H", "Music / help bar"), ("F11 / ESC", "Fullscreen / pause")]
 CONTROLS_DUNGEON = [("Left mouse", "Attack (hold)"), ("Right mouse / wheel", "Swap sword / fireball"),
                     ("SPACE", "Dodge roll"), ("E", "Stairs / purple gate"),
-                    ("I", "Inventory"), ("1 / 2", "Drink potions")]
+                    ("M", "Dungeon map"), ("I", "Inventory"), ("1 / 2", "Drink potions")]
 
 
 def draw_controls(g, v):
@@ -198,9 +198,8 @@ def draw_controls(g, v):
         y = y0 + 22 + i * 20
         g.text_shadow(v, g.font, k, (x1, y), GOLD, SHADOW)
         g.text_shadow(v, g.font, d, (x1 + 132, y), CREAM, SHADOW)
-    tips = ["Fireballs cost 5 MP and every kill returns a little. The goddess statue in the north sanctuary, "
-            "behind the Whispering Shrine, refills your HP and MP.",
-            "On floor 5, the purple gate leads to the final boss."]
+    tips = ["Fireballs cost 5 MP. Slay every foe to unseal the stairs; clear all 5 floors to open the purple gate. "
+            "The goddess statue in the north sanctuary heals you."]
     ty = y0 + 22 + len(CONTROLS_DUNGEON) * 20 + 10
     for tip in tips:
         for ln in wrap(g.font_s, tip, 250):

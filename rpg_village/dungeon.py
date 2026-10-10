@@ -11,6 +11,10 @@ T = 32
 DW, DH = 36, 24
 FLOOR, WALL, WATER, LAVA, PILLAR = range(5)
 
+FLOOR_NAMES = {1: "Forgotten Catacombs", 2: "Flooded Halls", 3: "Ashen Mines",
+               4: "Frozen Vault", 5: "Ancient Sanctum", 6: "Throne of the Warden"}
+SEE_RADIUS = 7          # how far (in tiles) the hero's lantern reveals the dungeon map
+
 
 class DungeonWorld:
     def __init__(self, level=1):
@@ -211,6 +215,9 @@ class Dungeon:
         self.t = 0.0
         self.cam = [0.0, 0.0]
         self.on_level = None          # combat.py hooks in here to (re)spawn monsters when a floor loads
+        self.explored = {lv: set() for lv in range(1, 7)}     # tiles the hero has seen, per floor (dungeon map)
+        self._seen_tile = None
+        self._map_worlds = {}
         self._load_tiles()
         self.set_level(1, spawn="entrance")
 
@@ -233,6 +240,7 @@ class Dungeon:
         self.world = DungeonWorld(self.level)
         self.torches = self._make_torches()
         self.cracks = self._make_details()
+        self._seen_tile = None
         self._set_spawn(spawn)
         if self.on_level:
             self.on_level()
@@ -284,8 +292,60 @@ class Dungeon:
             return "down"
         return None
 
+    # ------------------------------------------------------------------ dungeon map
+    def world_for(self, level):
+        """The layout of any floor (used by the map to show floors other than the current one)."""
+        if level == self.level:
+            return self.world
+        if level not in self._map_worlds:
+            self._map_worlds[level] = DungeonWorld(level)
+        return self._map_worlds[level]
+
+    def reveal(self, player):
+        """Mark the tiles around the hero as explored. Walls block the view, so rooms are
+        only drawn once you have actually looked into them."""
+        px, py = int(player.x // T), int((player.y - 4) // T)
+        if (px, py) == self._seen_tile:
+            return
+        self._seen_tile = (px, py)
+        seen = self.explored[self.level]
+        g = self.world.grid
+        r = SEE_RADIUS
+        for ty in range(max(0, py - r), min(DH, py + r + 1)):
+            for tx in range(max(0, px - r), min(DW, px + r + 1)):
+                if (tx, ty) in seen or math.hypot(tx - px, ty - py) > r + 0.5:
+                    continue
+                n = max(abs(tx - px), abs(ty - py))
+                blocked = False
+                for i in range(1, n):                 # walk the line; a wall in between hides the tile
+                    sx = px + (tx - px) * i / n
+                    sy = py + (ty - py) * i / n
+                    if g[int(round(sy))][int(round(sx))] == WALL:
+                        blocked = True
+                        break
+                if not blocked:
+                    seen.add((tx, ty))
+
+    def explored_to_save(self):
+        return {str(lv): ["".join("1" if (x, y) in tiles else "0" for x in range(DW)) for y in range(DH)]
+                for lv, tiles in self.explored.items() if tiles}
+
+    def load_explored(self, data):
+        self.explored = {lv: set() for lv in range(1, 7)}
+        self._seen_tile = None
+        for key, rows in (data or {}).items():
+            try:
+                lv = int(key)
+                for y, row in enumerate(rows[:DH]):
+                    for x, ch in enumerate(row[:DW]):
+                        if ch == "1":
+                            self.explored[lv].add((x, y))
+            except (ValueError, KeyError, TypeError):
+                continue
+
     def update(self, dt, player):
         self.t += dt
+        self.reveal(player)
         tx = player.x - 320
         ty = player.y - 180
         max_x = max(0, DW * T - 640)
@@ -405,6 +465,14 @@ class Dungeon:
             x, y = pos
             sx, sy = x * T - camx, y * T - camy
             surf.blit(self.stairs, (sx, sy))
+            if kind == "down" and combat and not combat.cleared:  # sealed until every foe on the floor is dead
+                pulse = (math.sin(self.t * 5) + 1) / 2
+                pygame.draw.rect(surf, (36, 8, 12), (sx + 2, sy + 2, 28, 28), border_radius=5)
+                pygame.draw.circle(surf, (170, 40, 50), (sx + 16, sy + 16), 14, 2)
+                pygame.draw.circle(surf, (240, 110, 100), (sx + 16, sy + 16), 7 + int(pulse * 3), 1)
+                pygame.draw.line(surf, (215, 70, 70), (sx + 8, sy + 8), (sx + 24, sy + 24), 2)
+                pygame.draw.line(surf, (215, 70, 70), (sx + 24, sy + 8), (sx + 8, sy + 24), 2)
+                continue
             if kind == "up" and combat and combat.boss_lock:      # sealed while the final boss lives
                 pulse = (math.sin(self.t * 6) + 1) / 2
                 pygame.draw.rect(surf, (30, 10, 44), (sx + 2, sy + 2, 28, 28), border_radius=5)

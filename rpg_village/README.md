@@ -116,6 +116,15 @@ for a real fight.
   (light-blue mark on the minimap and map). Stand in front of it and press **E** to fully restore HP and MP - as often as you like.
   Art: `assets/objects/goddess.png` (regenerate with `python tools/make_goddess.py`), placed in `World.build_gate`.
 
+## Clear every floor + the dungeon map
+- **The stairs down are sealed until every monster on the floor is dead.** Sealed stairs show a red rune, the prompt reads
+  "Sealed - N foes left", and the top-right counter shows the foes remaining. Cleared floors stay cleared (saved).
+- The **purple gate** on floor 5 only opens once *all five* floors have been cleared; otherwise it tells you which floors still have monsters.
+- **Press M in the dungeon** to open the dungeon map. It fills in as your lantern reveals rooms (walls block the view) and is saved with your game.
+  It marks the stairs (red = sealed, green = open), the altar, your position and the foes left. **A / D or the arrow keys** switch between explored
+  floors; tabs on the left show which floors are cleared (green dot) and where you are. M or Esc closes it; the game is paused while it is open.
+  Code: `Dungeon.reveal` / `explored_to_save` in `dungeon.py`, `Game.draw_dungeon_map` in `main.py`, `SEE_RADIUS` to change how far you see.
+
 ## Main quest - The Warden of the Hollow
 - Talk to **Elder Maren** in the village plaza: after her usual greeting she asks you to descend into the Hollow Below and defeat **Grimhorn**.
   The quest tracker appears at the top-left (village and dungeon) and in a box on the inventory screen. Talking to her again repeats the hint.

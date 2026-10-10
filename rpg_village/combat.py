@@ -41,7 +41,7 @@ FIRE = (255, 140, 50)       # fireball colour
 CHEST = 14                  # px between a character's feet and its chest (hit / aim centre)
 
 SWORD = dict(damage=14, cooldown=0.36, duration=0.20, reach=46, arc=135.0, knock=260.0, lunge=95.0)
-MAGIC = dict(damage=9, cooldown=0.42, duration=0.16, speed=300.0, radius=5, knock=120.0, life=1.15)
+MAGIC = dict(damage=25, cooldown=0.42, duration=0.16, speed=300.0, radius=5, knock=120.0, life=1.15)
 ROLL = dict(duration=0.30, speed=240.0, iframes=0.36, cooldown=0.70)
 
 BLOCKING = (WALL, WATER, LAVA, PILLAR)     # stops walking
@@ -971,11 +971,14 @@ class Combat:
                 self.cleared_floors.add(self.dungeon.level)
                 self.on_floor_cleared()
             if self.dungeon.level == 5 and not self.boss_defeated:
-                self.toast("Floor cleared! The purple gate hums... step up to it and press E.", 5.0)
+                if all(f in self.cleared_floors for f in range(1, 6)):
+                    self.toast("Every floor is clear! The purple gate hums... step up to it and press E.", 5.0)
+                else:
+                    self.toast("Floor cleared, but not every floor has been conquered yet.", 5.0)
             elif self.dungeon.level == 5:
                 self.toast("Floor cleared.", 2.5)
             else:
-                self.toast("Floor cleared! The stairs are safe.", 3.5)
+                self.toast("Floor cleared! The seal on the stairs down breaks.", 3.5)
         if self.boss is not None:
             if self.boss.state not in ("seated", "rise", "dead"):
                 self.boss_time += dt
