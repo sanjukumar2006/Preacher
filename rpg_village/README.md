@@ -27,6 +27,8 @@ The dungeon entrance at the end of the south road is now a sunken stone stairwel
 | N | skip one hour of time |
 | H | toggle help, F11 fullscreen, ESC pause / close dialogue |
 | I | open / close the inventory |
+| J | quest log (T there changes the tracked quest) |
+| T | trade with the shopkeeper you are standing beside |
 | 1 / 2 | drink a Health / Mana potion (village and dungeon) |
 | **Dungeon only** | |
 | Left mouse (hold) | attack with the equipped weapon, aimed at the cursor |
@@ -40,6 +42,9 @@ The dungeon entrance at the end of the south road is now a sunken stone stairwel
 - `world.py`           terrain noise, village layout, roads, forest, decor, collision, baked ground renderer
 - `entities.py`        player, villagers (wander AI), animals, dialogue box
 - `combat.py`          battle system: weapons, dodge roll, monster AI, projectiles, effects, combat HUD
+- `economy.py`         Crowns, bounties, loot, prices, shops, upgrades (no pygame)
+- `story.py` / `quests.py`  chapters + quest data / quest engine (no pygame)
+- `shop.py` / `questlog.py` trade screen / quest log screen
 - `data.py`            villager names, palettes, dialogue, named places  (edit this to change the story)
 - `generate_assets.py` draws every sprite/tile/sound with code into `assets/`
 - `assets/`            all generated art already included: tiles/, objects/, characters/, portraits/, animals/, decor/, ui/, sfx/, music/ (Hearth_and_Willow BGM)
@@ -125,9 +130,29 @@ for a real fight.
   floors; tabs on the left show which floors are cleared (green dot) and where you are. M or Esc closes it; the game is paused while it is open.
   Code: `Dungeon.reveal` / `explored_to_save` in `dungeon.py`, `Game.draw_dungeon_map` in `main.py`, `SEE_RADIUS` to change how far you see.
 
-## Main quest - The Warden of the Hollow
-- Talk to **Elder Maren** in the village plaza: after her usual greeting she asks you to descend into the Hollow Below and defeat **Grimhorn**.
-  The quest tracker appears at the top-left (village and dungeon) and in a box on the inventory screen. Talking to her again repeats the hint.
-- When Grimhorn falls the tracker says "return to Elder Maren". Report back for the reward: **+20 max HP, +20 max MP, 3 Health + 3 Mana Potions**
-  (and a full heal). Text and rewards are edited in `quest.py`.
-- If you beat Grimhorn before ever accepting the quest, Elder Maren still thanks you and pays the reward.
+## Economy - Crowns
+The currency is the **Crown**. Your purse shows under the HP/MP panel and in the inventory. Tuning lives in `economy.py`.
+- **Earn:** a bounty for every monster (deeper floors pay more), a one-time bonus for clearing each floor, Grimhorn's 250-Crown hoard,
+  quest rewards, and **loot** (Bone Shards, Ectoplasm, Slime Gel, Stone Chips, Arcane Dust, Beast Hide) that shopkeepers buy.
+  Loot has a pity timer, so quest items stay reachable even though monsters never respawn.
+- **Spend** (stand beside a shopkeeper, press **T**): Tobias's General Store (potions, food), Pip's Bakery, Sage Wren's Remedies
+  (Vitality / Arcane tonics, Fireball Focus, greater potions), Bram's Smithy (Sword Sharpening, Hearth Mail armor) and Rosalind's
+  inn (stew, a bed that restores HP/MP and skips to morning). Shops have BUY and SELL tabs; SHIFT+E sells a whole stack.
+- **Upgrades are permanent** and tiered; higher tiers unlock when you finish certain side quests.
+- **Renown:** every finished side quest adds 1. At 2 / 4 / 6 / 8 renown every shop gives 5 / 10 / 15 / 20% off.
+- **Risk:** falling in the dungeon costs 10% of your purse (max 40). Change `DEATH_PENALTY_*` in `economy.py`.
+- Tobias's shelves are empty until the caravan arrives (end of Chapter 1).
+
+## Story and quests (rewritten)
+All story data is in `story.py`; the rules are in `quests.py`; screens are `questlog.py` (J) and `shop.py` (T).
+- **Main story, six chapters:** 1 A Stranger in Hearthmoor, 2 Supplies for the Descent, 3 Into the Hollow (floors 1-2),
+  4 The Deeper Dark (floors 3-4), 5 The Warden of the Hollow (floor 5 + Grimhorn), 6 Hearthmoor Reborn (the festival).
+  Each chapter unlocks the next, and turning one in often offers the next in the same conversation.
+- **Eleven side quests**, each from a villager: collect loot, slay monsters, visit places, pay a bill, deliver bread, and more.
+- **Markers:** a gold **!** over a villager = new quest, gold **?** = turn in, blue **!** = a quest wants you to talk to them.
+- **HUD tracker** opens in full when a quest changes, then folds to one line. The quest log (J) lists Main Story, Side Quests
+  and Completed with objectives, giver and rewards; **T** picks which quest is tracked.
+- **Villagers react to the story:** shops open, chatter changes after each chapter and again after Grimhorn falls.
+- Quest rewards unlock things (forge tiers, Wren's recipes, greater potions, half-price beds).
+- Add a quest: append a dict to `QUESTS` in `story.py` (objective types are documented at the top of that file).
+- Old saves still load: the single old quest is converted into the new chain.

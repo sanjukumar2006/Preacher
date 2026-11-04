@@ -442,6 +442,10 @@ class Combat:
         self.max_hp = self.hp = PLAYER_MAX_HP
         self.max_mp = self.mp = MAX_MP
         self.inv = Inventory()
+        self.sword_bonus = 0                  # permanent upgrades bought from the shops (economy.py) are set by main.py
+        self.magic_bonus = 0
+        self.armor = 0.0                      # share of damage absorbed, 0.0 - 0.9
+        self.on_kill = lambda e: None         # main.py pays bounties and drops loot here
         self.hits_taken = 0
         self.kills = 0
         self.cam_used = (0, 0)
@@ -681,6 +685,7 @@ class Combat:
             e.die(self)
             self.kills += 1
             self.reward_kill(e)
+            self.on_kill(e)
             self.burst(e.x, e.y - e.chest, e.d["color"], 22, 170, .6, 3)
             self.sfx.play("die")
             self.shake(2, 0.15)
@@ -708,6 +713,9 @@ class Combat:
     def use_item(self, key):
         """Drink a potion from the pack. Returns True if it was used."""
         d, p = ITEMS[key], self.player
+        if "hp" not in d and "mp" not in d:
+            self.toast(f"The {d['name']} cannot be used. Sell it to a shopkeeper or hand it in for a quest.", 3.0)
+            return False
         if self.inv.count(key) <= 0:
             self.toast(f"You have no {d['name']}s.", 2.0)
             return False
@@ -750,6 +758,8 @@ class Combat:
         if self.invuln > 0:
             return False
         self.hits_taken += 1
+        if self.armor > 0:                                  # Hearth Mail from Bram's forge soaks up part of every hit
+            dmg = max(1, int(round(dmg * (1.0 - self.armor))))
         if not INFINITE_HP or self.boss_lock:                # the boss fight always uses real damage
             self.hp = max(0, self.hp - dmg)
         self.invuln, self.hurt_flash = 0.55, 0.3
@@ -819,7 +829,7 @@ class Combat:
             self.atk_cd, self.atk_t = MAGIC["cooldown"], MAGIC["duration"]
             a = self.aim
             bx, by = p.x + math.cos(a) * 14, p.y - CHEST + math.sin(a) * 14
-            self.spawn_bolt(bx, by, a, MAGIC["speed"], MAGIC["damage"], "player", FIRE,
+            self.spawn_bolt(bx, by, a, MAGIC["speed"], MAGIC["damage"] + self.magic_bonus, "player", FIRE,
                             MAGIC["radius"] + 1, MAGIC["life"])
             self.burst(bx, by, FIRE, 6, 80, .25)
             self.sfx.play("cast")
@@ -838,7 +848,7 @@ class Combat:
             a = math.atan2(dy, dx)
             if d > e.r + 12 and ang_diff(a, self.atk_angle) > half:
                 continue
-            self.damage_enemy(e, SWORD["damage"], a, SWORD["knock"])
+            self.damage_enemy(e, SWORD["damage"] + self.sword_bonus, a, SWORD["knock"])
 
     # ------------------------------------------------------------------ final boss
     @property

@@ -41,9 +41,13 @@ import world as W
 from world import FOOT, HOUSES, T, Baked, World
 from dungeon import Dungeon
 from combat import Combat
-import quest as Q
+import economy as ECO
+import quests as QU
 import save as SAVE
-from inventory import QUICK_ITEMS, draw_inventory, inv_click, inv_key
+import story
+from inventory import QUICK_ITEMS, _wrap, draw_coin, draw_inventory, inv_click, inv_key
+from questlog import draw_questlog, questlog_click, questlog_key
+from shop import ShopUI
 import gate
 from menus import (MenuList, Tutorial, draw_ask, draw_controls, draw_pause, draw_slots, draw_title_screen, make_motes)
 
@@ -135,6 +139,7 @@ class Game:
         self.player = Player(hx * T + 16, hy * T + 28, self.a["characters"]["hero"])
         self.combat = Combat(self.dungeon, self.player)
         self.combat.toast = self.toast
+        self.combat.on_kill = self.on_enemy_slain
         self.combat.on_victory = lambda: self.play_music("hearth_and_willow.mp3", fade_ms=2500)
         self.combat.on_boss_intro = self.boss_intro
         self.combat.on_boss_start = lambda: self.play_music("dark.mp3", fade_ms=400)
@@ -153,7 +158,7 @@ class Game:
 
         self.dialogue = Dialogue(self.font, self.a["ui"]["dialog_box"], self.a["ui"]["name_tag"],
                                  self.a["ui"]["next_arrow"])
-        self.combat.on_floor_cleared = lambda: self.save_game(auto=True)
+        self.combat.on_floor_cleared = self.on_floor_cleared_cb
         self.cam = [0.0, 0.0]
         self.center_camera(True)
         self.time = 9.0           # hour of the day
@@ -176,7 +181,13 @@ class Game:
         self.show_map = False
         self.map_floor = 1                          # floor shown on the dungeon map (browse with arrows / A, D)
         self.show_inv = False                       # inventory screen (key I)
-        self.quest = Q.Quest()
+        self.quests = QU.QuestLog()                 # story + quests  (quests.py, story.py)
+        self.eco = ECO.Economy()                    # Crowns, upgrades  (economy.py)
+        self.shop = ShopUI()                        # trade screen (key T)  (shop.py)
+        self.show_quests = False                    # quest log screen (key J)  (questlog.py)
+        self.ql_sel = 0
+        self.gold_flash = 0.0
+        self.shown_gold = 0
         self.heal_t = 0.0                           # goddess blessing animation timer
         self.death_t = 0.0                          # > 0 while the death scene plays
         self.holy = [radial(100, (int(70 * k), int(135 * k), int(210 * k)), 1.5) for k in (0.55, 0.75, 1.0)]
@@ -329,7 +340,8 @@ class Game:
         self.center_camera(True)
         self.banner_text = self.place_name
         self.banner_t = 3.2
-        self.toast("Talk to Elder Maren in the village plaza (press E near him)", 8.0)
+        self.quests.hud_t = QU.HUD_SECONDS
+        self.toast("Talk to Elder Maren in the village plaza (press E beside her)", 8.0)
         self.build_menus()
         if tutorial:
             self.tut.start()
@@ -549,6 +561,7 @@ class Game:
         self.show_map = False
         self.dialogue.active = False
         self.dungeon.set_level(1, spawn="entrance")
+        self.quests.notify(self, "floor", level=1)
         sx, sy = self.dungeon.player_spawn()
         self.player.x, self.player.y = sx, sy
         self.player.dir = "up"
@@ -594,6 +607,7 @@ class Game:
                 return
             new = old + 1
             self.dungeon.set_level(new, spawn="down")
+            self.quests.notify(self, "floor", level=new)
             self.player.x, self.player.y = self.dungeon.player_spawn()
             self.player.dir = "up"
             self.player.z = self.player.vz = 0.0
@@ -698,6 +712,8 @@ class Game:
             self.place_name = name
             self.banner_text = name
             self.banner_t = 3.2
+            if self.started and self.state == "play":
+                self.quests.notify(self, "place", name=name)
 
     def find_target(self):
         if self.scene == "dungeon":
@@ -753,26 +769,12 @@ class Game:
             obj.talking = True
             obj.face(self.player.x, self.player.y)
             self.player.dir = {"left": "right", "right": "left", "up": "down", "down": "up"}[obj.dir]
-            others_met = False
-            first = obj.talk_count == 0
-            after = None
-            if obj.id == "elder" and self.combat.boss_defeated and self.quest.state != "done":
-                lines = list(Q.THANKS)                     # Grimhorn is dead: report back and get the reward
-                obj.talk_count += 1 if first else 0
-                after = self.finish_quest
-            elif obj.id == "elder" and self.quest.state == "active":
-                lines = list(Q.REMINDER)
-            elif obj.id == "elder" and self.quest.state == "unknown":
-                lines = obj.lines(others_met) + Q.OFFER     # first request: go and defeat the boss
-                after = self.start_quest
-            else:
-                lines = obj.lines(others_met)
+            lines, after = self.quests.converse(self, obj)      # turn-ins, offers, reminders or chatter (quests.py)
 
-            def end(n=obj, first=first, after=after):
+            def end(n=obj, after=after):
                 n.talking = False
                 self.play("bye")
-                if after:
-                    after()
+                after()
             self.dialogue.start(obj.name, obj.role, lines, obj.portrait, end)
         elif kind == "animal":
             if obj.kind == "chicken":
@@ -786,25 +788,101 @@ class Game:
         else:
             self.dialogue.start(obj["name"], "", obj["text"], None)
 
-    def start_quest(self):
-        self.quest.state = "active"
-        self.quest.show_hud()
-        self.toast("New quest: " + Q.TITLE + "  (see Inventory: I)", 5.0)
-        self.save_game(auto=True)
-
-    def finish_quest(self):
+    # ------------------------------------------------------------ economy hooks
+    def on_enemy_slain(self, e):
+        """A monster died: pay its bounty, roll loot, and tell the quest log."""
         c = self.combat
-        self.quest.state = "done"
-        self.quest.show_hud()
-        c.max_hp += Q.REWARD["max_hp"]
-        c.max_mp += Q.REWARD["max_mp"]
-        c.hp, c.mp = c.max_hp, c.max_mp
-        c.inv.add("health_potion", Q.REWARD["health_potion"])
-        c.inv.add("mana_potion", Q.REWARD["mana_potion"])
-        self.play("talk")
-        self.toast("Quest complete: " + Q.TITLE, 6.0)
+        floor = self.dungeon.level
+        if e.is_boss:
+            gold, loot = ECO.BOSS_BOUNTY, []
+        elif c.boss_lock:                                   # minions summoned in the throne room pay nothing
+            return
+        else:
+            gold = self.eco.bounty(e.key, floor)
+            loot = self.eco.loot(e.key)
+        if gold:
+            self.eco.earn(gold)
+            c.text(f"+{gold} {ECO.CURRENCY_SHORT}", e.x, e.y - e.chest - 46, (255, 214, 90), 1.0)
+        for k in loot:
+            left = c.inv.add(k, 1)
+            if left:
+                self.toast("Your pack is full! Sell or use something.", 2.0)
+            else:
+                c.text(f"+{ECO.ITEM_NAMES[k]}", e.x, e.y - e.chest - 60, (200, 235, 255), 1.2)
+        if e.is_boss:
+            self.toast(f"Grimhorn's hoard: {gold} {ECO.CURRENCY}!", 4.0)
+        else:
+            self.quests.notify(self, "kill", key=e.key, big=e.big, floor=floor)
+
+    def on_floor_cleared_cb(self):
+        """Every monster on a floor is dead: first-time bounty bonus, quest check, autosave."""
+        lvl = self.dungeon.level
+        if lvl < 6 and lvl not in self.eco.bonus_floors:
+            self.eco.bonus_floors.add(lvl)
+            amt = ECO.floor_bonus(lvl)
+            self.eco.earn(amt)
+            self.toast(f"Floor {lvl} cleared! Bounty bonus: {amt} {ECO.CURRENCY}", 4.0)
+        self.quests.check(self)
         self.save_game(auto=True)
 
+    def sync_upgrades(self):
+        """Copy the sword / fireball / armor tiers from the economy into the battle system."""
+        c = self.combat
+        c.sword_bonus, c.magic_bonus, c.armor = self.eco.sword_bonus(), self.eco.magic_bonus(), self.eco.armor_pct()
+
+    def apply_upgrade(self, uid):
+        """Called right after a tier is bought. HP / MP tonics are a one-off boost (already inside max_hp when saved)."""
+        u, c = ECO.UPGRADES[uid], self.combat
+        if u["stat"] == "hp":
+            c.max_hp += u["per"]
+            c.hp += u["per"]
+        elif u["stat"] == "mp":
+            c.max_mp += u["per"]
+            c.mp += u["per"]
+        self.sync_upgrades()
+        self.save_game(auto=True)
+
+    def use_service(self, sid):
+        if sid == "rest":
+            c = self.combat
+            c.hp, c.mp = c.max_hp, c.max_mp
+            self.time = 7.0
+            self.heal_t = 1.2
+            self.toast("You sleep soundly and wake at dawn. HP and MP restored.", 4.0)
+            self.save_game(auto=True)
+
+    def try_trade(self):
+        """Key T: open the shop of the villager you are standing beside."""
+        tgt = self.target
+        if self.scene != "village" or not tgt or tgt[0] != "npc" or tgt[1].id not in ECO.SHOPS:
+            return
+        npc = tgt[1]
+        npc.face(self.player.x, self.player.y)
+        self.shop.open(self, npc.id)
+
+    def draw_gold(self, v, x, y):
+        """Purse panel: coin + Crowns. Flickers briefly when you earn some."""
+        gold = self.eco.gold
+        if gold != self.shown_gold:
+            self.gold_flash = 0.7 if gold > self.shown_gold else 0.0
+            self.shown_gold = gold
+        self.panel(v, pygame.Rect(x, y, 118, 22), 200)
+        draw_coin(v, x + 13, y + 11, 1.0)
+        bright = self.gold_flash > 0 and int(self.t * 14) % 2 == 0
+        self.text_shadow(v, self.font, str(gold), (x + 26, y + 5), (255, 250, 190) if bright else (255, 226, 150))
+        self.text_shadow(v, self.font_s, ECO.CURRENCY, (x + 32 + self.font.size(str(gold))[0], y + 7), (200, 190, 160))
+
+    def draw_marker(self, v, x, y, kind):
+        """Quest marker over a villager: gold ! = new quest, gold ? = turn in, blue ! = a quest wants you to talk to them."""
+        bob = math.sin(self.t * 4 + x * 0.05) * 2
+        ch, fill, edge = {"ready": ("?", (255, 214, 90), (110, 72, 8)),
+                          "offer": ("!", (255, 214, 90), (110, 72, 8)),
+                          "talk": ("!", (176, 214, 255), (36, 64, 120))}[kind]
+        cx, cy = int(x), int(y + bob)
+        pygame.draw.circle(v, edge, (cx, cy), 8)
+        pygame.draw.circle(v, fill, (cx, cy), 7)
+        img = self.font_m.render(ch, True, (60, 36, 10))
+        v.blit(img, (cx - img.get_width() // 2, cy - img.get_height() // 2))
 
     # ------------------------------------------------------------ save / load / death
     def collect_save(self):
@@ -829,7 +907,7 @@ class Game:
             pdir = "up"
         return dict(
             scene=scene, level=lvl, spawn=spawn, x=px, y=py, dir=pdir, time=self.time,
-            quest=self.quest.state,
+            eco=self.eco.to_save(), quests=self.quests.to_save(),
             hp=c.hp, mp=c.mp, max_hp=c.max_hp, max_mp=c.max_mp, weapon=c.weapon, kills=c.kills,
             boss_defeated=c.boss_defeated, boss_tries=c.boss_tries,
             cleared_floors=sorted(c.cleared_floors),
@@ -891,8 +969,12 @@ class Game:
         self.help_t = 0.0
         self.toasts = []
         self.time = float(d.get("time", 9.0))
-        self.quest.state = d.get("quest", "unknown")
-        self.quest.hud_t = 0.0
+        self.eco.from_save(d.get("eco"))
+        if "quests" in d:
+            self.quests.from_save(d["quests"])
+        else:                                              # a save from before the new quest system: convert it
+            self.quests.migrate_old(d.get("quest", "unknown"), kills=d.get("kills", 0))
+        self.sync_upgrades()
         self.dungeon_hint = bool(d.get("dungeon_hint", False))
         for n in self.npcs:
             n.talk_count = int(d.get("talk", {}).get(n.id, 0))
@@ -962,6 +1044,9 @@ class Game:
         self.banner_t = 3.2
         self.play_music("hearth_and_willow.mp3", fade_ms=1500)
         self.toast("You awaken before the goddess statue...", 4.5)
+        lost = self.eco.death_penalty()
+        if lost:
+            self.toast(f"You lost {lost} {ECO.CURRENCY} in the dark.", 4.5)
         self.save_game(auto=True)
 
     def draw_death(self, v):
@@ -979,28 +1064,38 @@ class Game:
             self.text_shadow(v, self.font, "The goddess calls you back...", (VIEW_W // 2, VIEW_H // 2 + 12), sub, (0, 0, 0), True)
 
     def draw_quest(self, v, x, y):
-        """Quest tracker panel (top-left, under the other panels)."""
-        t = self.quest.hud_tracker()
+        """Quest tracker (top-left). Opens fully for a few seconds whenever a quest changes, then folds down to the
+        title and the next unfinished objective. Press J for the full quest log; T there changes the tracked quest."""
+        t = self.quests.tracker(self)
         if not t:
             return
-        title, obj = t
-        words, lines, cur = obj.split(), [], ""
-        for w in words:
-            tt = (cur + " " + w).strip()
-            if self.font_s.size(tt)[0] <= 186:
-                cur = tt
-            else:
-                lines.append(cur)
-                cur = w
-        lines.append(cur)
-        done = self.quest.state == "done"
-        ready = self.quest.state == "ready"
-        h = 22 + len(lines) * 12
+        title, objs, is_main = t
+        full = self.quests.hud_t > 0
+        shown = objs if full else ([o for o in objs if not o[1]][:1] or objs[-1:])
+        rows = []
+        for text, done in shown:
+            wrapped = _wrap(self.font_s, text, 170)
+            if not full:
+                wrapped = wrapped[:1]
+            for j, ln in enumerate(wrapped):
+                rows.append((ln, done, j == 0))
+        rows = rows[:7]
+        ready = self.quests.state.get(self.quests.tracked) == "ready"
+        h = 22 + len(rows) * 12 + 2
         self.panel(v, pygame.Rect(x, y, 204, h), 200)
-        col = (170, 235, 170) if (done or ready) else (255, 226, 150)
-        self.text_shadow(v, self.font_s, "QUEST: " + title, (x + 8, y + 5), col)
-        for i, ln in enumerate(lines):
-            self.text_shadow(v, self.font_s, ln, (x + 8, y + 19 + i * 12), (236, 228, 214))
+        while self.font_s.size(title)[0] > 190 and len(title) > 6:
+            title = title[:-2]
+        col = (170, 235, 170) if ready else ((255, 226, 150) if is_main else (200, 220, 255))
+        self.text_shadow(v, self.font_s, title, (x + 8, y + 5), col)
+        for i, (ln, done, first) in enumerate(rows):
+            yy = y + 19 + i * 12
+            if first:
+                pygame.draw.rect(v, (26, 18, 18), (x + 8, yy + 2, 7, 7), border_radius=1)
+                pygame.draw.rect(v, (170, 235, 170) if done else (150, 130, 110), (x + 8, yy + 2, 7, 7), 1, border_radius=1)
+                if done:
+                    pygame.draw.line(v, (170, 235, 170), (x + 9, yy + 5), (x + 11, yy + 8), 1)
+                    pygame.draw.line(v, (170, 235, 170), (x + 11, yy + 8), (x + 14, yy + 3), 1)
+            self.text_shadow(v, self.font_s, ln, (x + 19, yy), (150, 142, 134) if done else (236, 228, 214))
 
     def pray(self):
         """Goddess statue in the sanctuary behind the Whispering Shrine: refills HP and MP (as often as you like)."""
@@ -1021,7 +1116,8 @@ class Game:
     def update(self, dt):
         self.t += dt
         keys = pygame.key.get_pressed()
-        hide = self.scene == "dungeon" and self.state == "play" and not self.paused and not self.show_inv and not self.show_map
+        hide = (self.scene == "dungeon" and self.state == "play" and not self.paused and not self.show_inv
+                and not self.show_map and not self.show_quests)
         if hide != self.mouse_hidden:                   # the dungeon draws its own crosshair
             self.mouse_hidden = hide
             pygame.mouse.set_visible(not hide)
@@ -1047,10 +1143,13 @@ class Game:
             for a in self.animals:
                 a.update(dt, self.world)
             return
-        if self.paused or self.show_map or self.show_inv:
+        if self.shop.active:
+            self.shop.update(dt)
+        if self.paused or self.show_map or self.show_inv or self.show_quests or self.shop.active:
             return
         self.heal_t = max(0.0, self.heal_t - dt)
-        self.quest.update(self, dt)
+        self.quests.update(self, dt)
+        self.gold_flash = max(0.0, self.gold_flash - dt)
         talking = self.dialogue.active
         if self.music_on:
             want = 0.22 if talking else ((0.44 if self.combat.boss_lock else 0.32) if self.scene == "dungeon" else 0.45)
@@ -1207,6 +1306,10 @@ class Game:
             else:
                 o.draw(v, cam, self.shadow)
         self.gatefx.draw_flames(v, cam, self.t)
+        for n in self.npcs:                                   # quest markers over villagers
+            m = self.quests.marker(n.id)
+            if m and view.collidepoint(n.x, n.y) and not n.talking and not (self.target and self.target[1] is n):
+                self.draw_marker(v, n.x - cam[0], n.y - cam[1] - 54, m)
         # chimney smoke
         for s in self.smoke:
             k = s[2] / 3.6
@@ -1231,6 +1334,8 @@ class Game:
             if kind == "npc":
                 tx, ty = obj.x - cam[0], obj.y - cam[1] - 46
                 label = obj.name
+                if obj.id in ECO.SHOPS:
+                    label += "   [T] Trade"
             elif kind == "animal":
                 tx, ty = obj.x - cam[0], obj.y - cam[1] - 34
                 label = "Pet" if obj.kind == "dog" else "Chicken"
@@ -1353,7 +1458,8 @@ class Game:
                 pygame.draw.rect(s, (148, 122, 168, 230), s.get_rect(), 1, border_radius=15)
                 s.blit(txt, (18, 8))
                 v.blit(s, ((VIEW_W - w) // 2, 12))
-            self.draw_quest(v, 6, 56)
+            self.draw_gold(v, 6, 56)
+            self.draw_quest(v, 6, 82)
             self.draw_toasts(v)
             self.combat.draw_hud(v, self.font, self.font_s, self.mouse_view())
             self.dialogue.draw(v)
@@ -1385,7 +1491,8 @@ class Game:
             pygame.draw.rect(v, (235, 225, 215), bar, 1, border_radius=3)
             t = self.font_s.render(f"{cur}/{mx}", True, (255, 255, 255))
             v.blit(t, (bar.centerx - t.get_width() // 2, bar.y - 1))
-        self.draw_quest(v, 6, 86)
+        self.draw_gold(v, 6, 86)
+        self.draw_quest(v, 6, 112)
         # minimap
         mm_rect = pygame.Rect(VIEW_W - 108, 6, 102, 102)
         self.panel(v, mm_rect, 200)
@@ -1411,7 +1518,7 @@ class Game:
         self.dialogue.draw(v)
         if self.help_t > 0 and not self.dialogue.active:
             a = min(1.0, self.help_t / 2)
-            txt = "WASD move  SHIFT run  SPACE jump  E talk  M map  I inventory  B music  H help"
+            txt = "WASD move  SHIFT run  SPACE jump  E talk  T trade  J quests  M map  I inventory  H help"
             img = self.font_s.render(txt, True, (255, 246, 226))
             s = pygame.Surface((img.get_width() + 18, 20), pygame.SRCALPHA)
             pygame.draw.rect(s, (40, 26, 22, 170), s.get_rect(), border_radius=8)
@@ -1625,6 +1732,10 @@ class Game:
                 self.draw_dungeon_map(v) if self.scene == "dungeon" else self.draw_map(v)
             if self.show_inv:
                 draw_inventory(self, v)
+            if self.show_quests:
+                draw_questlog(self, v)
+            if self.shop.active:
+                self.shop.draw(self, v)
             if self.paused:
                 if self.menu_screen == "controls":
                     draw_controls(self, v)
@@ -1658,6 +1769,18 @@ class Game:
                 inv_click(self, self.mouse_view())
             if e.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEWHEEL):
                 return True
+        if self.shop.active and self.state == "play" and not self.paused:
+            if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
+                self.shop.click(self, self.mouse_view())
+            elif e.type == pygame.MOUSEWHEEL and e.y:
+                self.shop.key(self, pygame.K_UP if e.y > 0 else pygame.K_DOWN)
+            if e.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEWHEEL):
+                return True
+        if self.show_quests and self.state == "play" and not self.paused:
+            if e.type == pygame.MOUSEBUTTONDOWN and e.button == 1:
+                questlog_click(self, self.mouse_view())
+            if e.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEWHEEL):
+                return True
         if e.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEWHEEL):
             # attack is read as "left button held" in update(); right click / scroll swaps weapon
             if self.state == "play" and not self.paused and self.scene == "dungeon":
@@ -1678,6 +1801,16 @@ class Game:
                 return True
             if menu_open:
                 return self.menu_key(k)
+            if self.shop.active:                               # trade screen swallows the keyboard
+                self.shop.key(self, k)
+                return True
+            if self.show_quests:                               # so does the quest log
+                if k in (pygame.K_ESCAPE, pygame.K_j, pygame.K_TAB):
+                    self.show_quests = False
+                    self.play("bye")
+                else:
+                    questlog_key(self, k)
+                return True
             if self.show_inv:                                  # inventory screen swallows the keyboard
                 if k in (pygame.K_ESCAPE, pygame.K_i, pygame.K_TAB):
                     self.show_inv = False
@@ -1715,6 +1848,13 @@ class Game:
             elif k == pygame.K_i and not self.dialogue.active and not self.show_map and not self.combat.victory_active:
                 self.show_inv = True
                 self.play("blip")
+            elif (k == pygame.K_j and not self.dialogue.active and not self.show_map and not self.combat.victory_active
+                  and not self.combat.dying and self.death_t <= 0):
+                self.show_quests = True
+                self.ql_sel = 0
+                self.play("blip")
+            elif k == pygame.K_t and not self.dialogue.active and not self.show_map:
+                self.try_trade()
             elif k in (pygame.K_1, pygame.K_2) and not self.dialogue.active and not self.show_map \
                     and not self.combat.victory_active:
                 self.combat.use_item(QUICK_ITEMS[0 if k == pygame.K_1 else 1])
